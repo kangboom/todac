@@ -4,9 +4,9 @@ services:
   # FastAPI 백엔드 서버
   backend:
     image: kangb/todac-backend:latest
-    build:
-      context: .
-      dockerfile: Dockerfile
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
     container_name: todac-backend
     ports:
       - "8000:8000"
