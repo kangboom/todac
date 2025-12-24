@@ -3,6 +3,7 @@ version: '3.8'
 services:
   # FastAPI 백엔드 서버
   backend:
+    image: kangb/todac-backend:latest
     build:
       context: .
       dockerfile: Dockerfile
@@ -38,6 +39,7 @@ services:
     restart: unless-stopped
     networks:
       - todac-network
+      - npm_network
 
   # PostgreSQL 데이터베이스
   postgres:
@@ -148,4 +150,5 @@ volumes:
 networks:
   todac-network:
     driver: bridge
-
+  npm_network:
+      external: true

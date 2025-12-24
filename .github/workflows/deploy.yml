@@ -1,0 +1,77 @@
+name: Backend Auto Deploy (FastAPI + DBs)
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. 소스 코드 가져오기
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      # 2. Docker Hub 로그인
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # 3. FastAPI 이미지 빌드 및 푸시
+      # (DB나 Milvus는 공식 이미지를 쓰므로 빌드할 필요 없음)
+      - name: Build and Push Backend Image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          # ★ docker-compose.yml에 적은 image 이름과 똑같이!
+          tags: ${{ secrets.DOCKER_USERNAME }}/todac-backend:latest
+
+      # 4. docker-compose.yml 파일 서버로 배달
+      - name: Copy docker-compose to Server
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SERVER_PORT }}
+          source: "docker-compose.yml"
+          target: "~/backend" # 백엔드 전용 폴더
+
+      # 5. 서버 접속 및 배포 실행
+      - name: Deploy to Server
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SERVER_PORT }}
+          script: |
+            echo "🚧 백엔드 서비스 배포 시작..."
+            
+            # 폴더 생성 및 이동
+            mkdir -p ~/backend
+            cd ~/backend
+            
+            # 1. 환경변수 파일(.env) 생성 (Secrets에서 가져옴)
+            echo "${{ secrets.ENV_FILE }}" > .env
+            
+            # 2. 네트워크 생성 (혹시 없으면 에러 방지용)
+            docker network create npm_network || true
+            
+            # 3. 최신 백엔드 이미지 다운로드 (DB 이미지는 이미 있으면 패스됨)
+            docker pull ${{ secrets.DOCKER_USERNAME }}/todac-backend:latest
+            
+            # 4. 전체 서비스 실행 (FastAPI + Postgres + Milvus 등)
+            # --build: 이미지가 바뀌었으면 새로 만듦
+            # -d: 백그라운드 실행
+            docker compose up -d --remove-orphans
+            
+            # 5. 불필요한 이미지 정리
+            docker image prune -f
+            
+            echo "✅ 모든 백엔드 서비스 배포 완료!"
