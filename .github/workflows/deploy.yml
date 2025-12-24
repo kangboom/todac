@@ -12,6 +12,9 @@ jobs:
       # 1. 소스 코드 가져오기
       - name: Checkout Code
         uses: actions/checkout@v3
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
 
       # 2. Docker Hub 로그인
       - name: Login to Docker Hub
@@ -53,7 +56,7 @@ jobs:
           port: ${{ secrets.SERVER_PORT }}
           timeout: 40s           # 서버 접속 시도 대기 시간 (기본 30s)
           command_timeout: 30m   # 명령어 실행 대기 시간 (넉넉하게 30분!)
-          
+
           script: |
             echo "🚧 백엔드 서비스 배포 시작..."
             
