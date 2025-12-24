@@ -3,7 +3,7 @@ version: '3.8'
 services:
   # FastAPI 백엔드 서버
   backend:
-    image: kangb/todac-backend:latest
+    image: kangbb/todac-backend:latest
     # build:
     #   context: .
     #   dockerfile: Dockerfile
