@@ -30,7 +30,8 @@ jobs:
           push: true
           # ★ docker-compose.yml에 적은 image 이름과 똑같이!
           tags: ${{ secrets.DOCKER_USERNAME }}/todac-backend:latest
-
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
       # 4. docker-compose.yml 파일 서버로 배달
       - name: Copy docker-compose to Server
         uses: appleboy/scp-action@master
@@ -50,6 +51,9 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_KEY }}
           port: ${{ secrets.SERVER_PORT }}
+          timeout: 40s           # 서버 접속 시도 대기 시간 (기본 30s)
+          command_timeout: 30m   # 명령어 실행 대기 시간 (넉넉하게 30분!)
+          
           script: |
             echo "🚧 백엔드 서비스 배포 시작..."
             
