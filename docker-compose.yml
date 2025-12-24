@@ -28,9 +28,9 @@ services:
       - MIN_RAG_SCORE_THRESHOLD=${MIN_RAG_SCORE_THRESHOLD:-0.7}
       - ENVIRONMENT=${ENVIRONMENT:-development}
       - DEBUG=${DEBUG:-True}
-    volumes:
-      - ./app:/app/app
-      - ./main.py:/app/main.py
+    # volumes:
+    #   - ./app:/app/app
+    #   - ./main.py:/app/main.py
     depends_on:
       postgres:
         condition: service_healthy
