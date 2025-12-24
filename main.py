@@ -86,9 +86,19 @@ def custom_openapi():
 app.openapi = custom_openapi
 
 # CORS 설정
+origins = [
+    "http://localhost",
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "https://www.todac.cloud",
+    "https://todac.cloud",
+    "http://www.todac.cloud",
+    "http://todac.cloud",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 개발 환경용, 프로덕션에서는 특정 도메인으로 제한
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
