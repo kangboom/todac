@@ -54,31 +54,33 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_KEY }}
           port: ${{ secrets.SERVER_PORT }}
-          timeout: 40s           # 서버 접속 시도 대기 시간 (기본 30s)
-          command_timeout: 30m   # 명령어 실행 대기 시간 (넉넉하게 30분!)
-
+          # 타임아웃 넉넉하게 (아까 설정하신 것)
+          timeout: 40s
+          command_timeout: 30m
+          
+          # ▼▼▼ 여기부터 수정하세요! ▼▼▼
           script: |
-            echo "🚧 백엔드 서비스 배포 시작..."
+            echo "🚧 백엔드 배포 시작..."
             
-            # 폴더 생성 및 이동
+            # 1. [중요] 서버에서도 Docker Hub 로그인 (비공개 이미지 접근 권한 획득)
+            echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+            
             mkdir -p ~/backend
             cd ~/backend
             
-            # 1. 환경변수 파일(.env) 생성 (Secrets에서 가져옴)
+            # .env 파일 생성
             echo "${{ secrets.ENV_FILE }}" > .env
             
-            # 2. 네트워크 생성 (혹시 없으면 에러 방지용)
+            # 네트워크 생성
             docker network create npm_network || true
             
-            # 3. 최신 백엔드 이미지 다운로드 (DB 이미지는 이미 있으면 패스됨)
+            # 2. 최신 이미지 다운로드
             docker pull ${{ secrets.DOCKER_USERNAME }}/todac-backend:latest
             
-            # 4. 전체 서비스 실행 (FastAPI + Postgres + Milvus 등)
-            # --build: 이미지가 바뀌었으면 새로 만듦
-            # -d: 백그라운드 실행
+            # 3. 컨테이너 실행 (★ --build 옵션 제거!)
+            # 소스코드가 없으므로 서버에서 빌드하면 안 됩니다. 오직 이미지만 갈아끼웁니다.
             docker compose up -d --remove-orphans
             
-            # 5. 불필요한 이미지 정리
+            # 4. 뒷정리
             docker image prune -f
-            
-            echo "✅ 모든 백엔드 서비스 배포 완료!"
+            echo "✅ 백엔드 배포 완료!"
