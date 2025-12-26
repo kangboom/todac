@@ -4,9 +4,6 @@ services:
   # FastAPI 백엔드 서버
   backend:
     image: kangbb/todac-backend:latest
-    # build:
-    #   context: .
-    #   dockerfile: Dockerfile
     container_name: todac-backend
     ports:
       - "8000:8000"
@@ -28,18 +25,14 @@ services:
       - MIN_RAG_SCORE_THRESHOLD=${MIN_RAG_SCORE_THRESHOLD:-0.7}
       - ENVIRONMENT=${ENVIRONMENT:-development}
       - DEBUG=${DEBUG:-True}
-    # volumes:
-    #   - ./app:/app/app
-    #   - ./main.py:/app/main.py
     depends_on:
       postgres:
         condition: service_healthy
       milvus:
         condition: service_healthy
-    restart: unless-stopped
     networks:
       - todac-network
-      - npm_network
+
 
   # PostgreSQL 데이터베이스
   postgres:
@@ -150,5 +143,3 @@ volumes:
 networks:
   todac-network:
     driver: bridge
-  npm_network:
-      external: true

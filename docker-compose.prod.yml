@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  backend:
+    restart: always
+    environment:
+      - DEBUG=False
+    networks:
+      - todac-network
+      - npm_network
+
+networks:
+  npm_network:
+    external: true
+

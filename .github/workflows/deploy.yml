@@ -36,15 +36,16 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
       # 4. docker-compose.yml 파일 서버로 배달
-      - name: Copy docker-compose to Server
+      - name: Copy docker-compose files to Server
         uses: appleboy/scp-action@master
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_KEY }}
           port: ${{ secrets.SERVER_PORT }}
-          source: "docker-compose.yml"
-          target: "~/backend" # 백엔드 전용 폴더
+          # ★ docker-compose.prod.yml도 같이 전송
+          source: "docker-compose.yml,docker-compose.prod.yml"
+          target: "~/backend"
 
       # 5. 서버 접속 및 배포 실행
       - name: Deploy to Server
@@ -54,33 +55,31 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_KEY }}
           port: ${{ secrets.SERVER_PORT }}
-          # 타임아웃 넉넉하게 (아까 설정하신 것)
+          # 타임아웃 넉넉하게
           timeout: 40s
           command_timeout: 30m
           
-          # ▼▼▼ 여기부터 수정하세요! ▼▼▼
           script: |
             echo "🚧 백엔드 배포 시작..."
             
-            # 1. [중요] 서버에서도 Docker Hub 로그인 (비공개 이미지 접근 권한 획득)
+            # Docker Hub 로그인
             echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
             
-            mkdir -p ~/backend
             cd ~/backend
             
             # .env 파일 생성
             echo "${{ secrets.ENV_FILE }}" > .env
             
-            # 네트워크 생성
+            # 네트워크 생성 (없으면 생성)
             docker network create npm_network || true
             
-            # 2. 최신 이미지 다운로드
+            # 최신 이미지 다운로드
             docker pull ${{ secrets.DOCKER_USERNAME }}/todac-backend:latest
             
-            # 3. 컨테이너 실행 (★ --build 옵션 제거!)
-            # 소스코드가 없으므로 서버에서 빌드하면 안 됩니다. 오직 이미지만 갈아끼웁니다.
-            docker compose up -d --remove-orphans
+            # 배포용 설정 적용하여 컨테이너 실행
+            # docker-compose.yml (기본) + docker-compose.prod.yml (배포 설정)
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --remove-orphans
             
-            # 4. 뒷정리
+            # 뒷정리
             docker image prune -f
             echo "✅ 백엔드 배포 완료!"
