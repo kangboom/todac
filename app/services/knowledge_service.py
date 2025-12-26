@@ -262,20 +262,24 @@ def _generate_storage_paths(doc_id: uuid.UUID, original_filename: str) -> Dict[s
     
     Returns:
         {
-            'raw_pdf_key': 'raw/doc_12345/original.pdf',
-            'processed_md_key': 'processed/doc_12345/content.md',
-            'images_dir': 'processed/doc_12345/images/'
+            'raw_pdf_key': 'dev/raw/doc_12345/original.pdf' (dev) 또는 'prod/raw/doc_12345/original.pdf' (prod)
+            'processed_md_key': 'dev/processed/doc_12345/content.md'
+            'images_dir': 'dev/processed/doc_12345/images/'
         }
     """
     doc_dir = f"doc_{doc_id}"
+    
+    # 환경별 최상위 폴더 설정
+    # 개발환경(development) -> 'dev', 배포환경(production) -> 'prod'
+    env_folder = "prod" if settings.ENVIRONMENT == "production" else "dev"
     
     # 원본 파일명에서 확장자 제거
     base_filename = original_filename.rsplit('.', 1)[0] if '.' in original_filename else original_filename
     
     return {
-        'raw_pdf_key': f"raw/{doc_dir}/{original_filename}",
-        'processed_md_key': f"processed/{doc_dir}/{base_filename}.md",
-        'images_dir': f"processed/{doc_dir}/images/"
+        'raw_pdf_key': f"{env_folder}/raw/{doc_dir}/{original_filename}",
+        'processed_md_key': f"{env_folder}/processed/{doc_dir}/{base_filename}.md",
+        'images_dir': f"{env_folder}/processed/{doc_dir}/images/"
     }
 
 
