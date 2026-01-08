@@ -21,8 +21,68 @@ import logging
 import json
 import boto3
 from botocore.exceptions import ClientError
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import SystemMessage, HumanMessage
+from app.agent.prompts import MARKDOWN_CLEANUP_PROMPT
 
 logger = logging.getLogger(__name__)
+
+# Markdown 보정용 LLM 클라이언트
+_cleanup_model = None
+
+def get_cleanup_model():
+    """Markdown 보정용 LLM 클라이언트 싱글톤"""
+    global _cleanup_model
+    if _cleanup_model is None and settings.OPENAI_API_KEY:
+        _cleanup_model = ChatOpenAI(
+            api_key=settings.OPENAI_API_KEY,
+            model=settings.OPENAI_MODEL_GENERATION,
+            temperature=0.1,  # 보정은 낮은 temperature 사용
+            max_tokens=4000  # 긴 문서도 처리 가능하도록
+        )
+    return _cleanup_model
+
+
+def cleanup_markdown_with_llm(markdown_text: str, filename: str = None) -> str:
+    """
+    LLM을 사용하여 Markdown 문서 보정
+    
+    Args:
+        markdown_text: 보정할 Markdown 텍스트
+        filename: 파일명 (로깅용)
+    
+    Returns:
+        보정된 Markdown 텍스트
+    """
+    if not markdown_text or not markdown_text.strip():
+        return markdown_text
+    
+    cleanup_model = get_cleanup_model()
+    if not cleanup_model:
+        logger.warning("LLM 클라이언트가 없어 Markdown 보정을 건너뜁니다.")
+        return markdown_text
+    
+    try:
+        logger.info(f"Markdown 보정 시작: 파일={filename}, 길이={len(markdown_text)}")
+        
+        # 프롬프트 생성
+        messages = [
+            SystemMessage(content=MARKDOWN_CLEANUP_PROMPT),
+            HumanMessage(content=f"보정할 Markdown 문서:\n\n{markdown_text}")
+        ]
+        
+        # LLM 호출
+        response = cleanup_model.invoke(messages)
+        cleaned_text = response.content.strip()
+        
+        logger.info(f"Markdown 보정 완료: 파일={filename}, 원본 길이={len(markdown_text)}, 보정 후 길이={len(cleaned_text)}")
+        
+        return cleaned_text
+        
+    except Exception as e:
+        logger.error(f"Markdown 보정 실패: {str(e)}, 원본 텍스트 반환")
+        # 보정 실패 시 원본 반환
+        return markdown_text
 
 # 파서 인스턴스 (설정에 따라 선택)
 _parsers: List[BaseParser] = []
@@ -308,6 +368,7 @@ class KnowledgeService:
         # 1. 파일 읽기
         content = file.file.read()
         filename = file.filename
+        file_size = len(content)
         
         if not content:
             raise HTTPException(
@@ -343,6 +404,15 @@ class KnowledgeService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"문서 파싱 중 오류가 발생했습니다: {str(e)}"
             )
+        
+        # 4-1. Markdown 보정 (PDF 파서인 경우)
+        if isinstance(parser, (LlamaParseParser, PyMuPDFParser, DoclingParser)):
+            if documents and len(documents) > 0:
+                original_text = documents[0].get("text", "")
+                if original_text:
+                    cleaned_text = cleanup_markdown_with_llm(original_text, filename)
+                    documents[0]["text"] = cleaned_text
+                    logger.info(f"Markdown 보정 완료: 파일={filename}")
         
         # 5. 텍스트 청킹 (Markdown인 경우 MarkdownHeaderTextSplitter 사용)
         # PDF 파서는 모두 Markdown을 반환하므로 헤더 기반 청킹 사용
@@ -385,13 +455,6 @@ class KnowledgeService:
             content_type='text/markdown'
         )
         
-        # TODO: 이미지 추출 및 업로드 (옵션)
-        # PDF에서 이미지를 추출하는 경우:
-        # images = extract_images_from_pdf(content)  # 별도 함수 필요
-        # for idx, image_data in enumerate(images):
-        #     image_key = f"{storage_paths['images_dir']}img{idx+1}.png"
-        #     _upload_to_s3(image_data, image_key, content_type='image/png')
-        
         # 10. 임베딩 생성 및 Milvus 저장
         try:
             collection = get_milvus_collection_safe()
@@ -401,14 +464,28 @@ class KnowledgeService:
             milvus_data = []
             
             for chunk in chunks:
-                embedding = get_embedding(chunk["text"])
-                embeddings.append(embedding)
-                
                 # 헤더 정보 추출 (Header 1, Header 2, Header 3 등)
                 header_metadata = {
                     k: v for k, v in chunk.get("metadata", {}).items() 
                     if k.startswith("Header")
                 }
+                
+                # 임베딩용 텍스트 생성 (헤더 정보 포함)
+                # 예: "대주제 > 소주제\n\n본문 내용..." 형태로 구성하여 문맥 정보 강화
+                if header_metadata:
+                    # Header 1, Header 2, Header 3 순서로 정렬하여 경로 생성
+                    sorted_headers = [
+                        header_metadata[k] 
+                        for k in sorted(header_metadata.keys())
+                    ]
+                    header_path = " > ".join(sorted_headers)
+                    embedding_text = f"{header_path}\n\n{chunk['text']}"
+                else:
+                    embedding_text = chunk['text']
+                
+                embedding = get_embedding(embedding_text)
+                embeddings.append(embedding)
+                
                 headers_json = json.dumps(header_metadata, ensure_ascii=False) if header_metadata else "{}"
                 
                 milvus_data.append({
@@ -448,6 +525,7 @@ class KnowledgeService:
             storage_url=storage_url,
             raw_pdf_url=raw_pdf_url,
             doc_hash=doc_hash,
+            file_size=file_size,
             meta_info=meta_info
         )
         
@@ -458,6 +536,85 @@ class KnowledgeService:
         logger.info(f"문서 업로드 완료: doc_id={doc_id}, filename={filename}, chunks={len(chunks)}")
         
         return knowledge_doc
+    
+    @staticmethod
+    def ingest_documents_batch(
+        db: Session,
+        files: List[UploadFile],
+        category: str,
+        user_id: uuid.UUID
+    ) -> List[Dict[str, Any]]:
+        """
+        여러 문서를 배치로 업로드 및 벡터 DB 저장
+        
+        Args:
+            db: 데이터베이스 세션
+            files: 업로드된 파일 리스트
+            category: 문서 카테고리 (모든 파일에 동일하게 적용)
+            user_id: 업로드한 사용자 ID
+        
+        Returns:
+            결과 리스트 [{"success": bool, "filename": str, "document": KnowledgeDoc or None, "error": str or None}]
+        """
+        results = []
+        
+        logger.info(f"배치 업로드 시작: {len(files)}개 파일, 카테고리={category}")
+        
+        for file in files:
+            filename = file.filename or "unknown.pdf"
+            result = {
+                "success": False,
+                "filename": filename,
+                "document": None,
+                "error": None
+            }
+            
+            try:
+                # 파일 포인터를 처음으로 리셋
+                file.file.seek(0)
+                
+                # 단일 문서 업로드
+                knowledge_doc = KnowledgeService.ingest_document(
+                    db=db,
+                    file=file,
+                    category=category,
+                    user_id=user_id
+                )
+                
+                result["success"] = True
+                result["document"] = knowledge_doc
+                logger.info(f"배치 업로드 성공: {filename}")
+                
+            except HTTPException as e:
+                # HTTP 예외는 그대로 전달하지 않고 결과에 기록
+                result["error"] = e.detail
+                logger.error(f"배치 업로드 실패: {filename}, 오류={e.detail}")
+                
+            except Exception as e:
+                # 기타 예외 처리
+                error_msg = str(e)
+                result["error"] = f"문서 처리 중 오류가 발생했습니다: {error_msg}"
+                logger.error(f"배치 업로드 실패: {filename}, 오류={error_msg}", exc_info=True)
+            
+            results.append(result)
+            
+            # 트랜잭션 커밋 (각 파일마다 독립적으로 처리)
+            try:
+                db.commit()
+            except Exception as e:
+                db.rollback()
+                logger.error(f"DB 커밋 실패: {filename}, 오류={str(e)}")
+                if result["success"]:
+                    result["success"] = False
+                    result["error"] = f"DB 저장 중 오류가 발생했습니다: {str(e)}"
+                    result["document"] = None
+        
+        success_count = sum(1 for r in results if r["success"])
+        failure_count = len(results) - success_count
+        
+        logger.info(f"배치 업로드 완료: 총 {len(results)}개, 성공 {success_count}개, 실패 {failure_count}개")
+        
+        return results
     
     @staticmethod
     def get_documents(
@@ -518,8 +675,6 @@ class KnowledgeService:
         if knowledge_doc.raw_pdf_url:
             _delete_from_s3(knowledge_doc.raw_pdf_url)
         
-        # TODO: 이미지 파일들도 삭제 (processed/doc_{doc_id}/images/ 디렉토리)
-        # doc_id로 디렉토리 경로를 알 수 있으므로 해당 디렉토리의 모든 파일 삭제 가능
         
         # 3. Milvus에서 해당 문서의 모든 청크 삭제
         try:
