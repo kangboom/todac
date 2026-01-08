@@ -21,6 +21,7 @@ class DocumentResponse(BaseModel):
     storage_url: str
     raw_pdf_url: Optional[str] = None
     doc_hash: Optional[str] = None
+    file_size: Optional[int] = None
     meta_info: Dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
@@ -33,3 +34,18 @@ class DocumentListResponse(BaseModel):
     limit: int
     offset: int
 
+
+class BatchDocumentResult(BaseModel):
+    """배치 업로드 결과 (단일 문서)"""
+    success: bool
+    filename: str
+    document: Optional[DocumentResponse] = None
+    error: Optional[str] = None
+
+
+class BatchDocumentResponse(BaseModel):
+    """배치 문서 업로드 응답"""
+    results: List[BatchDocumentResult]
+    total: int
+    success_count: int
+    failure_count: int

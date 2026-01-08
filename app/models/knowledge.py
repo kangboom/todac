@@ -1,7 +1,7 @@
 """
 업로드 문서 관리 테이블 (KnowledgeDoc)
 """
-from sqlalchemy import Column, String, Text, Index
+from sqlalchemy import Column, String, Text, Index, Integer
 from sqlalchemy.dialects.postgresql import UUID, JSONB, TIMESTAMP
 from sqlalchemy.sql import func
 import uuid
@@ -18,6 +18,7 @@ class KnowledgeDoc(Base):
     storage_url = Column(Text, nullable=False, unique=True, comment="S3에 저장된 Markdown 파일 경로")
     raw_pdf_url = Column(Text, nullable=True, comment="S3에 저장된 원본 PDF 파일의 저장 경로")
     doc_hash = Column(String(64), nullable=True, index=True, comment="문서 내용의 해시값 (중복 업로드 방지)")
+    file_size = Column(Integer, nullable=True, comment="파일 크기 (bytes)")
     meta_info = Column(JSONB, nullable=False, server_default='{}', comment="가변 메타데이터 (작성자, 태그, 카테고리 등)")
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False, comment="레코드 생성 일시")
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False, comment="레코드 최종 수정 일시")

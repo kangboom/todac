@@ -10,7 +10,13 @@ from app.core.database import get_db
 from app.api.dependencies import get_current_user
 from app.models.user import User, UserRole
 from fastapi import HTTPException
-from app.dto.knowledge import DocumentIngestRequest, DocumentResponse, DocumentListResponse
+from app.dto.knowledge import (
+    DocumentIngestRequest, 
+    DocumentResponse, 
+    DocumentListResponse,
+    BatchDocumentResponse,
+    BatchDocumentResult
+)
 from app.services.knowledge_service import knowledge_service
 
 router = APIRouter()
@@ -29,27 +35,33 @@ def require_admin(current_user: User = Depends(get_current_user)) -> User:
 
 @router.post(
     "/admin/knowledge/ingest",
-    response_model=DocumentResponse,
+    response_model=BatchDocumentResponse,
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(oauth2_scheme)]
 )
-async def ingest_document(
-    file: UploadFile = File(..., description="업로드할 문서 파일 (PDF, TXT, MD)"),
-    category: str = Form(..., description="문서 카테고리 (예: 식이, 수면, 호흡, 발달, 예방접종, 피부, 응급)"),
+async def ingest_documents(
+    files: List[UploadFile] = File(..., description="업로드할 문서 파일들 (PDF, 1개 이상 선택 가능)"),
+    category: str = Form(..., description="문서 카테고리 (모든 파일에 동일하게 적용, 예: 식이, 수면, 호흡, 발달, 예방접종, 피부, 응급)"),
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
     """
-    문서 업로드 및 벡터 DB 저장
+    문서 업로드 및 벡터 DB 저장 (단일 또는 배치)
     
-    - **file**: 업로드할 문서 파일 (PDF, TXT, MD 지원)
-    - **category**: 문서 카테고리
+    - **files**: 업로드할 문서 파일들 (PDF, 1개 이상 선택 가능)
+    - **category**: 문서 카테고리 (모든 파일에 동일하게 적용)
     
-    문서가 업로드되면:
+    각 문서가 업로드되면:
     1. 텍스트 추출 및 청킹
     2. OpenAI 임베딩 생성
     3. Milvus 벡터 DB 저장
     4. PostgreSQL 메타데이터 저장
+    
+    반환값:
+    - **results**: 각 파일의 업로드 결과 (성공/실패 포함)
+    - **total**: 전체 파일 수
+    - **success_count**: 성공한 파일 수
+    - **failure_count**: 실패한 파일 수
     """
     # 카테고리 유효성 검사
     valid_categories = ["식이", "수면", "호흡", "발달", "예방접종", "피부", "응급", "기타"]
@@ -59,14 +71,47 @@ async def ingest_document(
             detail=f"유효하지 않은 카테고리입니다. 가능한 값: {', '.join(valid_categories)}"
         )
     
-    knowledge_doc = knowledge_service.ingest_document(
+    # 파일 개수 확인
+    if not files or len(files) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="업로드할 파일이 없습니다."
+        )
+    
+    if len(files) > 50:  # 최대 50개까지 제한
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="한 번에 최대 50개까지 업로드할 수 있습니다."
+        )
+    
+    # 배치 업로드 실행 (단일 파일이어도 동일한 방식으로 처리)
+    results = knowledge_service.ingest_documents_batch(
         db=db,
-        file=file,
+        files=files,
         category=category,
         user_id=current_user.id
     )
     
-    return DocumentResponse.model_validate(knowledge_doc)
+    # 결과 변환
+    batch_results = []
+    for result in results:
+        batch_result = BatchDocumentResult(
+            success=result["success"],
+            filename=result["filename"],
+            document=DocumentResponse.model_validate(result["document"]) if result["document"] else None,
+            error=result["error"]
+        )
+        batch_results.append(batch_result)
+    
+    success_count = sum(1 for r in batch_results if r.success)
+    failure_count = len(batch_results) - success_count
+    
+    return BatchDocumentResponse(
+        results=batch_results,
+        total=len(batch_results),
+        success_count=success_count,
+        failure_count=failure_count
+    )
 
 
 @router.get(
