@@ -113,14 +113,14 @@ def ingest_document(
     # 원본 PDF 업로드 (raw/)
     raw_pdf_url = upload_to_s3(
         content=content,
-        s3_key=storage_paths['raw_pdf_key'],
+        s3_key=storage_paths.raw_pdf_key,
         content_type='application/pdf'
     )
     
     # 변환된 Markdown 업로드 (processed/)
     storage_url = upload_to_s3(
         content=markdown_bytes,
-        s3_key=storage_paths['processed_md_key'],
+        s3_key=storage_paths.processed_md_key,
         content_type='text/markdown'
     )
     

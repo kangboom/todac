@@ -8,8 +8,8 @@ from app.core.config import settings
 import logging
 import uuid
 from typing import Dict
-
 from functools import lru_cache
+from app.dto.knowledge import StoragePath
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +144,7 @@ def delete_from_s3(s3_url: str) -> None:
         # 예외 발생해도 계속 진행
 
 
-def generate_storage_paths(doc_id: uuid.UUID, original_filename: str) -> Dict[str, str]:
+def generate_storage_paths(doc_id: uuid.UUID, original_filename: str) -> StoragePath:
     """
     S3 저장 경로 생성 (새로운 구조)
     
@@ -153,6 +153,7 @@ def generate_storage_paths(doc_id: uuid.UUID, original_filename: str) -> Dict[st
         original_filename: 원본 파일명
     
     Returns:
+        StoragePath 객체
         {
             'raw_pdf_key': 'dev/raw/doc_12345/original.pdf' (dev) 또는 'prod/raw/doc_12345/original.pdf' (prod)
             'processed_md_key': 'dev/processed/doc_12345/content.md'
@@ -168,9 +169,9 @@ def generate_storage_paths(doc_id: uuid.UUID, original_filename: str) -> Dict[st
     # 원본 파일명에서 확장자 제거
     base_filename = original_filename.rsplit('.', 1)[0] if '.' in original_filename else original_filename
     
-    return {
-        'raw_pdf_key': f"{env_folder}/raw/{doc_dir}/{original_filename}",
-        'processed_md_key': f"{env_folder}/processed/{doc_dir}/{base_filename}.md",
-        'images_dir': f"{env_folder}/processed/{doc_dir}/images/"
-    }
+    return StoragePath(
+        raw_pdf_key=f"{env_folder}/raw/{doc_dir}/{original_filename}",
+        processed_md_key=f"{env_folder}/processed/{doc_dir}/{base_filename}.md",
+        images_dir=f"{env_folder}/processed/{doc_dir}/images/"
+    )
 

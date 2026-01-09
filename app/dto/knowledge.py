@@ -63,3 +63,11 @@ class Chunk(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
     chunk_index: int
 
+
+class StoragePath(BaseModel):
+    """S3 저장 경로"""
+    raw_pdf_key: str
+    processed_md_key: str
+    images_dir: str
+
+
