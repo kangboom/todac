@@ -8,8 +8,9 @@ from app.models.baby import BabyProfile
 from app.agent.graph import get_agent_graph
 from app.agent.state import AgentState
 from app.core.config import settings
-from app.dto.chat import ChatMessageSendResponse
-from typing import Dict, Any, List
+from app.dto.chat import ChatMessageSendResponse, ConversationMessage
+from app.dto.baby import AgeInfo, BabyAgentInfo
+from typing import Dict, Any, List, Optional
 import uuid
 import time
 import logging
@@ -19,7 +20,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 logger = logging.getLogger(__name__)
 
 
-def _calculate_corrected_age(birth_date: date, due_date: date) -> Dict[str, Any]:
+def _calculate_corrected_age(birth_date: date, due_date: date) -> AgeInfo:
     """
     교정 연령 계산
     교정 연령 = 현재 날짜 - 출산 예정일
@@ -28,28 +29,28 @@ def _calculate_corrected_age(birth_date: date, due_date: date) -> Dict[str, Any]
     corrected_age_days = (today - due_date).days
     corrected_age_months = corrected_age_days / 30.44  # 평균 월 길이
     
-    return {
-        "corrected_age_days": corrected_age_days,
-        "corrected_age_months": round(corrected_age_months, 1),
-        "chronological_age_days": (today - birth_date).days,
-        "chronological_age_months": round((today - birth_date).days / 30.44, 1)
-    }
+    return AgeInfo(
+        corrected_age_days=corrected_age_days,
+        corrected_age_months=round(corrected_age_months, 1),
+        chronological_age_days=(today - birth_date).days,
+        chronological_age_months=round((today - birth_date).days / 30.44, 1)
+    )
 
 
-def _prepare_baby_info(baby: BabyProfile) -> Dict[str, Any]:
+def _prepare_baby_info(baby: BabyProfile) -> BabyAgentInfo:
     """아기 정보를 AgentState에 맞는 형식으로 변환"""
     age_info = _calculate_corrected_age(baby.birth_date, baby.due_date)
     
-    return {
-        "baby_id": str(baby.id),
-        "name": baby.name,
-        "birth_date": baby.birth_date.isoformat(),
-        "due_date": baby.due_date.isoformat(),
-        "gender": baby.gender,
-        "birth_weight": baby.birth_weight,
-        "medical_history": baby.medical_history or [],
-        **age_info
-    }
+    return BabyAgentInfo(
+        baby_id=str(baby.id),
+        name=baby.name,
+        birth_date=baby.birth_date.isoformat(),
+        due_date=baby.due_date.isoformat(),
+        gender=baby.gender,
+        birth_weight=baby.birth_weight,
+        medical_history=baby.medical_history or [],
+        **age_info.model_dump()
+    )
 
 
 def _get_or_create_session(
@@ -88,7 +89,7 @@ def _get_conversation_history(
     db: Session,
     session_id: uuid.UUID,
     limit: int = 10
-) -> List[Dict[str, Any]]:
+) -> List[ConversationMessage]:
     """대화 이력 가져오기"""
     messages = db.query(ChatMessage).filter(
         ChatMessage.session_id == session_id
@@ -98,10 +99,10 @@ def _get_conversation_history(
     messages.reverse()
     
     return [
-        {
-            "role": "user" if msg.role == MessageRole.USER.value else "assistant",
-            "content": msg.content
-        }
+        ConversationMessage(
+            role="user" if msg.role == MessageRole.USER.value else "assistant",
+            content=msg.content
+        )
         for msg in messages
     ]
 
@@ -157,10 +158,10 @@ def send_message(
         if conversation_history:
             # _get_conversation_history가 최신순(오래된 것 -> 최신 것)으로 이미 반환함
             for msg in conversation_history:
-                content = msg.get("content", "")
-                if msg.get("role") == "user":
+                content = msg.content
+                if msg.role == "user":
                     history_messages.append(HumanMessage(content=content))
-                elif msg.get("role") == "assistant":
+                elif msg.role == "assistant":
                     history_messages.append(AIMessage(content=content))
         
         # 현재 질문 추가
@@ -172,7 +173,7 @@ def send_message(
             "session_id": session.id,
             "user_id": user_id,
             "messages": history_messages,
-            "baby_info": _prepare_baby_info(baby),
+            "baby_info": _prepare_baby_info(baby).model_dump(),  # DTO -> Dict 변환
             "retrieved_docs": [],
             "rag_retrieval_attempts": 0,
             "min_rag_score": settings.MIN_RAG_SCORE_THRESHOLD,
@@ -303,5 +304,3 @@ def delete_session(
         
     db.delete(session)
     db.commit()
-
-

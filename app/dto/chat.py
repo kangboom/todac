@@ -56,3 +56,9 @@ class ChatMessageSendResponse(BaseModel):
     is_emergency: bool = Field(..., description="응급 상황 여부")
     rag_sources: Optional[List[Dict[str, Any]]] = Field(None, description="참조 문서 정보")
     response_time: float = Field(..., description="응답 시간 (초)")
+
+
+class ConversationMessage(BaseModel):
+    """대화 이력 메시지 (에이전트용)"""
+    role: str = Field(..., description="메시지 역할 (user/assistant)")
+    content: str = Field(..., description="메시지 내용")

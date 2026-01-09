@@ -65,3 +65,21 @@ class BabyResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+
+class AgeInfo(BaseModel):
+    """교정 연령 및 생활 연령 정보"""
+    corrected_age_days: int = Field(..., description="교정 연령 (일)")
+    corrected_age_months: float = Field(..., description="교정 연령 (개월)")
+    chronological_age_days: int = Field(..., description="생활 연령 (일)")
+    chronological_age_months: float = Field(..., description="생활 연령 (개월)")
+
+
+class BabyAgentInfo(AgeInfo):
+    """AI 에이전트가 사용할 아기 정보"""
+    baby_id: str
+    name: str
+    birth_date: str
+    due_date: str
+    gender: Optional[str]
+    birth_weight: float
+    medical_history: List[str]

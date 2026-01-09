@@ -157,7 +157,7 @@ def grade_documents_node(state: AgentState) -> AgentState:
                     logger.info(f"검색 결과 추출 성공: {len(retrieved_docs)}개 문서")
                     # state에 저장하여 다음 노드(generate 등)에서 사용 가능하게 함
                     state["retrieved_docs"] = retrieved_docs
-                    
+    
                     # RAG 소스 정보 저장
                     rag_sources = [
                         {
@@ -254,7 +254,7 @@ def grade_documents_node(state: AgentState) -> AgentState:
             evaluation_result = json.loads(response_text)
             score = float(evaluation_result.get("score", 0.5))
             reason = evaluation_result.get("reason", "")
-            
+    
             # 점수 정규화 (0.0 ~ 1.0)
             score = max(0.0, min(1.0, score))
             
@@ -483,5 +483,3 @@ def grade_hallucination_node(state: AgentState) -> AgentState:
         state["_hallucination_passed"] = True  # 에러 시 통과로 처리
     
     return state
-
-
