@@ -4,6 +4,7 @@ PyMuPDF (fitz) + pymupdf4llm을 사용하여 PDF를 Markdown으로 변환하는 
 from typing import List, Dict, Any
 from io import BytesIO
 from app.services.parsers.base import BaseParser
+from app.dto.knowledge import ParsedDocument
 import logging
 
 logger = logging.getLogger(__name__)
@@ -12,7 +13,7 @@ logger = logging.getLogger(__name__)
 class PyMuPDFParser(BaseParser):
     """PyMuPDF (fitz) + pymupdf4llm을 사용하여 PDF를 Markdown으로 변환하는 파서"""
     
-    def parse(self, content: bytes, filename: str = None) -> List[Dict[str, Any]]:
+    def parse(self, content: bytes, filename: str = None) -> List[ParsedDocument]:
         """
         PyMuPDF를 사용하여 PDF를 Markdown으로 변환
         
@@ -21,7 +22,7 @@ class PyMuPDFParser(BaseParser):
             filename: 파일명
         
         Returns:
-            청크 리스트 [{"text": str (markdown), "metadata": dict}]
+            ParsedDocument 리스트
         """
         try:
             import fitz  # PyMuPDF
@@ -47,14 +48,14 @@ class PyMuPDFParser(BaseParser):
                 logger.info(f"PyMuPDF 파싱 성공: 파일={filename}, 페이지 수={page_count}, 텍스트 길이={len(markdown_text)}")
                 
                 # 단일 문서로 반환 (청킹은 별도로 처리)
-                return [{
-                    "text": markdown_text.strip(),
-                    "metadata": {
+                return [ParsedDocument(
+                    text=markdown_text.strip(),
+                    metadata={
                         "filename": filename or "unknown.pdf",
                         "format": "markdown",
                         "parser": "pymupdf"
                     }
-                }]
+                )]
                 
             finally:
                 pdf_document.close()

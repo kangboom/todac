@@ -5,6 +5,7 @@ from typing import List, Dict, Any
 import tempfile
 import os
 from app.services.parsers.base import BaseParser
+from app.dto.knowledge import ParsedDocument
 from app.core.config import settings
 import logging
 
@@ -14,7 +15,7 @@ logger = logging.getLogger(__name__)
 class LlamaParseParser(BaseParser):
     """LlamaParse를 사용하여 PDF를 Markdown으로 변환하는 파서"""
     
-    def parse(self, content: bytes, filename: str = None) -> List[Dict[str, Any]]:
+    def parse(self, content: bytes, filename: str = None) -> List[ParsedDocument]:
         """
         LlamaParse를 사용하여 PDF를 Markdown으로 변환
         
@@ -23,7 +24,7 @@ class LlamaParseParser(BaseParser):
             filename: 파일명
         
         Returns:
-            청크 리스트 [{"text": str (markdown), "metadata": dict}]
+            ParsedDocument 리스트
         """
         if not settings.LLAMAPARSE_API_KEY:
             raise ValueError(
@@ -98,14 +99,14 @@ class LlamaParseParser(BaseParser):
                     )
                 
                 # 단일 문서로 반환 (청킹은 별도로 처리)
-                return [{
-                    "text": markdown_text.strip(),
-                    "metadata": {
+                return [ParsedDocument(
+                    text=markdown_text.strip(),
+                    metadata={
                         "filename": filename or "unknown.pdf",
                         "format": "markdown",
                         "parser": "llamaparse"
                     }
-                }]
+                )]
                     
             finally:
                 # 임시 파일 삭제

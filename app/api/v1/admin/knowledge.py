@@ -17,7 +17,7 @@ from app.dto.knowledge import (
     BatchDocumentResponse,
     BatchDocumentResult
 )
-from app.services.knowledge_service import knowledge_service
+from app.services import knowledge_service
 
 router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")
@@ -92,23 +92,12 @@ async def ingest_documents(
         user_id=current_user.id
     )
     
-    # 결과 변환
-    batch_results = []
-    for result in results:
-        batch_result = BatchDocumentResult(
-            success=result["success"],
-            filename=result["filename"],
-            document=DocumentResponse.model_validate(result["document"]) if result["document"] else None,
-            error=result["error"]
-        )
-        batch_results.append(batch_result)
-    
-    success_count = sum(1 for r in batch_results if r.success)
-    failure_count = len(batch_results) - success_count
+    success_count = sum(1 for r in results if r.success)
+    failure_count = len(results) - success_count
     
     return BatchDocumentResponse(
-        results=batch_results,
-        total=len(batch_results),
+        results=results,
+        total=len(results),
         success_count=success_count,
         failure_count=failure_count
     )

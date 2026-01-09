@@ -4,15 +4,16 @@ Markdown 문서 청킹 유틸리티 (Langchain MarkdownHeaderTextSplitter 사용
 from typing import List, Dict, Any
 from langchain_text_splitters import MarkdownHeaderTextSplitter
 import logging
+from app.dto.knowledge import ParsedDocument, Chunk
 
 logger = logging.getLogger(__name__)
 
 
 def chunk_markdown_documents(
-    documents: List[Dict[str, Any]],
+    documents: List[ParsedDocument],
     chunk_size: int = 600,
     chunk_overlap: int = 120
-) -> List[Dict[str, Any]]:
+) -> List[Chunk]:
     """
     Markdown 문서를 헤더 기반으로 청킹
     
@@ -20,12 +21,12 @@ def chunk_markdown_documents(
     Markdown 헤더(#, ##, ### 등)를 기준으로 문서를 분할합니다.
     
     Args:
-        documents: 문서 리스트 [{"text": str (markdown), "metadata": dict}]
+        documents: ParsedDocument 리스트
         chunk_size: 각 청크의 최대 크기 (헤더 분할 후 추가 분할 시 사용)
         chunk_overlap: 청크 간 겹치는 문자 수
     
     Returns:
-        청크 리스트 [{"text": str, "metadata": dict, "chunk_index": int}]
+        Chunk 리스트
     """
     # MarkdownHeaderTextSplitter 초기화
     # 헤더 레벨별로 분할 (h1, h2, h3)
@@ -43,8 +44,8 @@ def chunk_markdown_documents(
     all_chunks = []
     
     for doc in documents:
-        markdown_text = doc.get("text", "")
-        base_metadata = doc.get("metadata", {})
+        markdown_text = doc.text
+        base_metadata = doc.metadata
         
         if not markdown_text.strip():
             continue
@@ -67,28 +68,28 @@ def chunk_markdown_documents(
                     sub_chunks = _split_large_chunk(chunk_text, chunk_size, chunk_overlap)
                     
                     for sub_idx, sub_chunk in enumerate(sub_chunks):
-                        all_chunks.append({
-                            "text": sub_chunk,
-                            "metadata": chunk_metadata.copy(),
-                            "chunk_index": idx * 1000 + sub_idx  # 헤더 인덱스 + 서브 인덱스
-                        })
+                        all_chunks.append(Chunk(
+                            text=sub_chunk,
+                            metadata=chunk_metadata.copy(),
+                            chunk_index=idx * 1000 + sub_idx  # 헤더 인덱스 + 서브 인덱스
+                        ))
                 else:
-                    all_chunks.append({
-                        "text": chunk_text,
-                        "metadata": chunk_metadata,
-                        "chunk_index": idx
-                    })
+                    all_chunks.append(Chunk(
+                        text=chunk_text,
+                        metadata=chunk_metadata,
+                        chunk_index=idx
+                    ))
             
             logger.info(f"Markdown 청킹 완료: {len(md_header_splits)}개 헤더 섹션 → {len(all_chunks)}개 청크")
             
         except Exception as e:
             logger.error(f"Markdown 청킹 실패: {str(e)}")
             # 실패 시 전체 텍스트를 하나의 청크로 처리
-            all_chunks.append({
-                "text": markdown_text,
-                "metadata": base_metadata.copy(),
-                "chunk_index": 0
-            })
+            all_chunks.append(Chunk(
+                text=markdown_text,
+                metadata=base_metadata.copy(),
+                chunk_index=0
+            ))
     
     logger.info(f"전체 문서 청킹 완료: {len(documents)}개 문서 → {len(all_chunks)}개 청크")
     

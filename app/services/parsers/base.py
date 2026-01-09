@@ -4,6 +4,7 @@
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any
 import logging
+from app.dto.knowledge import ParsedDocument
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +13,7 @@ class BaseParser(ABC):
     """문서 파서 기본 클래스"""
     
     @abstractmethod
-    def parse(self, content: bytes, filename: str = None) -> List[Dict[str, Any]]:
+    def parse(self, content: bytes, filename: str = None) -> List[ParsedDocument]:
         """
         문서를 파싱하여 텍스트 청크 리스트 반환
         
@@ -21,7 +22,7 @@ class BaseParser(ABC):
             filename: 파일명 (선택)
         
         Returns:
-            청크 리스트, 각 청크는 {"text": str, "metadata": dict} 형식
+            ParsedDocument 리스트
         """
         pass
     

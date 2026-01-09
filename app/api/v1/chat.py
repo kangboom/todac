@@ -16,7 +16,7 @@ from app.dto.chat import (
     ChatSessionDetailResponse,
     ChatMessageResponse
 )
-from app.services.chat_service import chat_service
+from app.services import chat_service
 from app.models.chat import ChatSession, ChatMessage
 
 router = APIRouter()
@@ -43,15 +43,13 @@ async def send_message(
     
     세션이 없으면 자동으로 새 세션을 생성하고, 있으면 기존 세션에 메시지를 추가합니다.
     """
-    result = chat_service.send_message(
+    return chat_service.send_message(
         db=db,
         user_id=current_user.id,
         baby_id=request.baby_id,
         question=request.message,
         session_id=request.session_id
     )
-    
-    return ChatMessageSendResponse(**result)
 
 
 @router.get(
@@ -68,21 +66,19 @@ async def get_sessions(
     sessions = chat_service.get_sessions(db, current_user.id, baby_id)
     
     # 메시지 개수 추가
-    result = []
-    for session in sessions:
-        session_dict = {
-            "id": session.id,
-            "user_id": session.user_id,
-            "baby_id": session.baby_id,
-            "title": session.title,
-            "is_active": session.is_active,
-            "started_at": session.started_at,
-            "updated_at": session.updated_at,
-            "message_count": len(session.messages) if session.messages else 0
-        }
-        result.append(ChatSessionResponse(**session_dict))
-    
-    return result
+    return [
+        ChatSessionResponse(
+            id=session.id,
+            user_id=session.user_id,
+            baby_id=session.baby_id,
+            title=session.title,
+            is_active=session.is_active,
+            started_at=session.started_at,
+            updated_at=session.updated_at,
+            message_count=len(session.messages) if session.messages else 0
+        )
+        for session in sessions
+    ]
 
 
 @router.get(

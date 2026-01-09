@@ -7,6 +7,7 @@ import os
 
 from sqlalchemy.sql import True_
 from app.services.parsers.base import BaseParser
+from app.dto.knowledge import ParsedDocument
 import logging
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.datamodel.base_models import InputFormat
@@ -36,7 +37,7 @@ class DoclingParser(BaseParser):
             logger.error(f"Docling 초기화 실패: {str(e)}")
             self.converter = None
 
-    def parse(self, content: bytes, filename: str = None) -> List[Dict[str, Any]]:
+    def parse(self, content: bytes, filename: str = None) -> List[ParsedDocument]:
         """
         Docling을 사용하여 PDF를 Markdown으로 변환
         
@@ -45,7 +46,7 @@ class DoclingParser(BaseParser):
             filename: 파일명
         
         Returns:
-            청크 리스트 [{"text": str (markdown), "metadata": dict}]
+            ParsedDocument 리스트
         """
         if not self.converter:
             raise ImportError(
@@ -77,9 +78,9 @@ class DoclingParser(BaseParser):
                     # 텍스트가 있는 경우에만 로깅
                     if hasattr(item, "text"):
                         log_text = item.text.strip()[:50] + "..." if len(item.text.strip()) > 50 else item.text.strip()
-                        logger.info(f"Docling Item: Label={item.label}, Text='{log_text}'")
+                        logger.debug(f"Docling Item: Label={item.label}, Text='{log_text}'")
                     else:
-                        logger.info(f"Docling Item: Label={item.label}, No text attribute")
+                        logger.debug(f"Docling Item: Label={item.label}, No text attribute")
 
                     if item.label in (DocItemLabel.PAGE_HEADER, DocItemLabel.PAGE_FOOTER):
                         # 텍스트를 비워서 export 시 포함되지 않게 함
@@ -100,14 +101,14 @@ class DoclingParser(BaseParser):
                 logger.info(f"Docling 파싱 성공: 파일={filename}, 텍스트 길이={len(markdown_text)}")
                 
                 # 단일 문서로 반환 (청킹은 별도로 처리)
-                return [{
-                    "text": markdown_text.strip(),
-                    "metadata": {
+                return [ParsedDocument(
+                    text=markdown_text.strip(),
+                    metadata={
                         "filename": filename or "unknown.pdf",
                         "format": "markdown",
                         "parser": "docling"
                     }
-                }]
+                )]
                     
             finally:
                 # 임시 파일 삭제

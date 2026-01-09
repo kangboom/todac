@@ -11,7 +11,7 @@ from app.api.dependencies import get_current_user
 from app.models.user import User
 from app.dto.baby import BabyCreateRequest, BabyUpdateRequest, BabyResponse
 from app.dto.auth import UserResponse
-from app.services.baby_service import baby_service
+from app.services import baby_service
 
 router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")

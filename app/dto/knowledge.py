@@ -49,3 +49,17 @@ class BatchDocumentResponse(BaseModel):
     total: int
     success_count: int
     failure_count: int
+
+
+class ParsedDocument(BaseModel):
+    """파싱된 문서 (청킹 전)"""
+    text: str
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class Chunk(BaseModel):
+    """문서 청크"""
+    text: str
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    chunk_index: int
+
