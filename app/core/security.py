@@ -42,6 +42,18 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     return encoded_jwt
 
 
+def create_refresh_token(data: dict) -> str:
+    """Refresh Token 생성"""
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    
+    to_encode.update({"exp": int(expire.timestamp())})
+    # Refresh Token은 구분하기 위해 별도의 type을 명시할 수도 있지만,
+    # 여기서는 동일한 알고리즘과 비밀키를 사용하되 만료 기간만 다르게 설정합니다.
+    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    return encoded_jwt
+
+
 def decode_access_token(token: str) -> Optional[dict]:
     """JWT 토큰 디코딩 및 검증"""
     try:

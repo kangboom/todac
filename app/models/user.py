@@ -26,6 +26,7 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
     nickname = Column(String(50), nullable=False)
     role = Column(SQLEnum(UserRole), default=UserRole.USER, nullable=False)
+    refresh_token = Column(String(500), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     # 관계 설정
