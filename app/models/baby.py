@@ -21,6 +21,7 @@ class BabyProfile(Base):
     due_date = Column(Date, nullable=False, comment="출산 예정일 (교정 연령/발달 평가 기준)")
     gender = Column(String(10), nullable=True, comment="성별: M 또는 F")
     birth_weight = Column(Float, nullable=False, comment="출생 체중 (kg)")
+    birth_height = Column(Float, nullable=True, comment="출생 키 (cm)")
     medical_history = Column(JSONB, default=list, nullable=False, comment="기저질환 리스트 (예: ['RDS', '황달'])")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)

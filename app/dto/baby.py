@@ -14,6 +14,7 @@ class BabyCreateRequest(BaseModel):
     due_date: date = Field(..., description="출산 예정일 (교정 연령/발달 평가 기준)")
     gender: Optional[str] = Field(None, description="성별: M 또는 F")
     birth_weight: float = Field(..., gt=0, description="출생 체중 (kg)")
+    birth_height: Optional[float] = Field(None, gt=0, description="출생 키 (cm)")
     medical_history: List[str] = Field(default_factory=list, description="기저질환 리스트 (예: ['RDS', '황달'])")
 
     @field_validator('gender')
@@ -40,6 +41,7 @@ class BabyUpdateRequest(BaseModel):
     due_date: Optional[date] = None
     gender: Optional[str] = None
     birth_weight: Optional[float] = Field(None, gt=0)
+    birth_height: Optional[float] = Field(None, gt=0)
     medical_history: Optional[List[str]] = None
 
     @field_validator('gender')
@@ -61,6 +63,7 @@ class BabyResponse(BaseModel):
     due_date: date
     gender: Optional[str]
     birth_weight: float
+    birth_height: Optional[float] = None
     medical_history: List[str]
     created_at: datetime
     updated_at: datetime
@@ -82,4 +85,5 @@ class BabyAgentInfo(AgeInfo):
     due_date: str
     gender: Optional[str]
     birth_weight: float
+    birth_height: Optional[float] = None
     medical_history: List[str]
