@@ -8,7 +8,9 @@ services:
     networks:
       - todac-network
       - npm_network
-
+  attu:
+    networks:
+      - npm_network
 networks:
   npm_network:
     external: true
