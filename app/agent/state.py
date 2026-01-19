@@ -2,11 +2,10 @@
 상태 정의 (AgentState: 질문, 문서, 응급여부)
 """
 from typing import TypedDict, List, Optional, Dict, Any, Annotated
-from datetime import date
 import uuid
-from operator import add
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
+from app.dto.qna import QnADoc
 
 
 class AgentState(TypedDict):
@@ -29,6 +28,10 @@ class AgentState(TypedDict):
     min_rag_score: float  # 최소 RAG 스코어 임계값
     _rag_score_passed: bool  # RAG 스코어 통과 여부 (라우팅용)
     
+    # [추가] QnA 검색 관련 (Strategy B)
+    qna_docs: Optional[List[QnADoc]] # QnA 검색 결과 (DTO 사용)
+    qna_score: float                 # QnA 최고 유사도 점수
+    
     # Self-RAG 관련 필드
     _doc_relevance_score: Optional[float]  # 문서 관련성 점수 (0.0 ~ 1.0)
     _doc_relevance_passed: bool  # 문서 관련성 통과 여부 (라우팅용)
@@ -38,9 +41,10 @@ class AgentState(TypedDict):
     _max_generation_attempts: int  # 최대 생성 시도 횟수
     
     # 응답
-    response: str  # 최종 응답 텍스트
-    is_emergency: bool  # 응급 상황 여부
+    response: str
+    is_emergency: bool # 응급 상황 여부
     
-    # 메타데이터
-    rag_sources: Optional[List[Dict[str, Any]]]  # 참조 문서 정보 (doc_id, score 등)
-    response_time: Optional[float]  # 응답 시간 (초)
+    # RAG 소스 정보 (출처 표기용)
+    rag_sources: Optional[List[Dict[str, Any]]]
+    
+    response_time: Optional[float] # 답변 생성 시간 (초)

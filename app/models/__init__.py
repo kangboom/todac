@@ -6,6 +6,7 @@ from app.models.baby import BabyProfile
 from app.models.chat import ChatSession, ChatMessage, MessageRole
 from app.models.feedback import Feedback
 from app.models.knowledge import KnowledgeDoc
+from app.models.qna import OfficialQnA
 
 __all__ = [
     "User",
@@ -16,5 +17,6 @@ __all__ = [
     "MessageRole",
     "Feedback",
     "KnowledgeDoc",
+    "OfficialQnA",
 ]
 

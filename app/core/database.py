@@ -13,7 +13,7 @@ engine = create_engine(
     pool_pre_ping=True,
     pool_size=10,
     max_overflow=20,
-    echo=settings.DEBUG  # SQL 쿼리 로깅 (개발 환경에서만)
+    echo=False  # SQL 쿼리 로깅 비활성화 (너무 많은 로그 방지)
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

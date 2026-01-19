@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 # Milvus 컬렉션 이름
 MILVUS_COLLECTION_NAME = "knowledge_base"
+OFFICIAL_QNA_COLLECTION_NAME = "official_qna"
 
 # 임베딩 차원 (text-embedding-3-small: 1536)
 EMBEDDING_DIMENSION = 1536
@@ -102,3 +103,63 @@ def get_milvus_collection_safe() -> Collection:
     else:
         return create_milvus_collection()
 
+
+def create_qna_collection() -> Collection:
+    """
+    공식 QnA 컬렉션 생성
+    
+    스키마:
+    - id: int64 (Primary Key, Auto ID) - Milvus 내부 ID
+    - qna_id: int64 (PostgreSQL ID)
+    - question: varchar (질문 텍스트)
+    - answer: varchar (답변 텍스트)
+    - category: varchar (카테고리)
+    - source: varchar (출처)
+    - embedding: float_vector (질문 임베딩)
+    """
+    get_milvus_connection()
+    
+    if utility.has_collection(OFFICIAL_QNA_COLLECTION_NAME):
+        logger.info(f"컬렉션 '{OFFICIAL_QNA_COLLECTION_NAME}'이 이미 존재합니다.")
+        collection = Collection(OFFICIAL_QNA_COLLECTION_NAME)
+        collection.load()
+        return collection
+
+    fields = [
+        FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=True),
+        FieldSchema(name="qna_id", dtype=DataType.INT64, description="PostgreSQL QnA ID"),
+        FieldSchema(name="question", dtype=DataType.VARCHAR, max_length=2048, description="질문"),
+        FieldSchema(name="answer", dtype=DataType.VARCHAR, max_length=65535, description="답변"),
+        FieldSchema(name="category", dtype=DataType.VARCHAR, max_length=100, description="카테고리"),
+        FieldSchema(name="source", dtype=DataType.VARCHAR, max_length=512, description="출처"),
+        FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=EMBEDDING_DIMENSION, description="질문 임베딩"),
+    ]
+    
+    schema = CollectionSchema(fields=fields, description="공식 QnA 데이터베이스")
+    
+    collection = Collection(name=OFFICIAL_QNA_COLLECTION_NAME, schema=schema)
+    
+    # 인덱스 생성
+    index_params = {
+        "metric_type": "L2",
+        "index_type": "IVF_FLAT",
+        "params": {"nlist": 128} # 데이터가 적을 수 있으므로 nlist 조정
+    }
+    
+    collection.create_index(field_name="embedding", index_params=index_params)
+    collection.load()
+    
+    logger.info(f"Milvus 컬렉션 '{OFFICIAL_QNA_COLLECTION_NAME}' 생성 완료")
+    return collection
+
+
+def get_qna_collection_safe() -> Collection:
+    """QnA 컬렉션 가져오기 (없으면 생성)"""
+    get_milvus_connection()
+    
+    if utility.has_collection(OFFICIAL_QNA_COLLECTION_NAME):
+        collection = Collection(OFFICIAL_QNA_COLLECTION_NAME)
+        collection.load()
+        return collection
+    else:
+        return create_qna_collection()
