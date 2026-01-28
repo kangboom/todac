@@ -35,11 +35,7 @@ class AgentState(TypedDict):
     # Self-RAG 관련 필드
     _doc_relevance_score: Optional[float]  # 문서 관련성 점수 (0.0 ~ 1.0)
     _doc_relevance_passed: bool  # 문서 관련성 통과 여부 (라우팅용)
-    _hallucination_score: Optional[float]  # 환각 점수 (0.0 ~ 1.0, 높을수록 정확)
-    _hallucination_passed: bool  # 환각 체크 통과 여부 (라우팅용)
-    _generation_attempts: int  # 답변 생성 시도 횟수
-    _max_generation_attempts: int  # 최대 생성 시도 횟수
-    
+
     # 응답
     response: str
     is_emergency: bool # 응급 상황 여부

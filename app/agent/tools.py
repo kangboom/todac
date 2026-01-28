@@ -87,19 +87,8 @@ def milvus_knowledge_search(
             logger.warning("⚠️ Milvus 컬렉션에 데이터가 없습니다. 문서를 먼저 업로드해주세요.")
             return []
         
-        # 인덱스 확인
-        indexes = collection.indexes
-        logger.info(f"컬렉션 인덱스 개수: {len(indexes)}")
-        if indexes:
-            for idx in indexes:
-                logger.info(f"  - 인덱스 필드: {idx.field_name}, 타입: {idx.params}")
-        else:
-            logger.warning("⚠️ Milvus 컬렉션에 인덱스가 없습니다. 인덱스가 없으면 검색이 실패할 수 있습니다.")
-        
         # 질문 임베딩
-        logger.info("질문 임베딩 생성 중...")
         query_embedding = get_embedding(query)
-        logger.info(f"질문 임베딩 생성 완료: 차원={len(query_embedding)}")
         
         # 검색 파라미터 (데이터가 적을 때 nprobe 조정)
         # nprobe는 nlist보다 작아야 함 (기본 nlist=1024)
@@ -108,7 +97,6 @@ def milvus_knowledge_search(
             "metric_type": "L2",  # 유클리드 거리
             "params": {"nprobe": nprobe}
         }
-        logger.info(f"검색 파라미터: {search_params}")
         
         # 벡터 검색 수행 (카테고리 필터 없이 전체 검색)
         logger.info(f"Milvus 벡터 검색 실행 중...")
@@ -152,12 +140,6 @@ def milvus_knowledge_search(
         logger.error(f"상세 에러:\n{traceback.format_exc()}")
         # 에러 발생 시 빈 리스트 반환
         return []
-
-
-# 하위 호환성을 위한 함수 (기존 코드에서 사용 중)
-def hybrid_search_milvus(query: str, top_k: int = 5) -> List[Dict[str, Any]]:
-    """하위 호환성을 위한 래퍼 함수"""
-    return milvus_knowledge_search.invoke({"query": query, "top_k": top_k})
 
 
 @tool

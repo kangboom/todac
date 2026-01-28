@@ -8,7 +8,6 @@ from app.agent.prompts import (
     SYSTEM_PROMPT,  # Agent Node용
     DOC_RELEVANCE_PROMPT_TEMPLATE, 
     REWRITE_QUERY_PROMPT_TEMPLATE,
-    HALLUCINATION_CHECK_PROMPT_TEMPLATE,
     RESPONSE_GENERATION_PROMPT_TEMPLATE,
     AGENT_NODE_PROMPT_TEMPLATE,
     get_baby_context_string,
@@ -391,15 +390,47 @@ def generate_node(state: AgentState) -> AgentState:
     qna_score = state.get("qna_score", 0.0)
     qna_docs = state.get("qna_docs", [])
     
-    attempts = state.get("_generation_attempts", 0) + 1
-    state["_generation_attempts"] = attempts
-    
     if not agent_chat_model:
         state["response"] = "죄송합니다. 현재 답변을 생성할 수 없습니다."
         return state
     
     try:
         baby_context = get_baby_context_string(baby_info)
+
+        # QnA 출처 -> rag_sources 형태로 변환 (유사도 점수: 노출하지 않음)
+        def _build_qna_sources(docs):
+            sources = []
+            for d in (docs or []):
+                sources.append(
+                    {
+                        "source_type": "qna",
+                        "qna_id": str(getattr(d, "id", "") or ""),
+                        "filename": getattr(d, "source", "") or "",
+                        "category": getattr(d, "category", "") or "",
+                        "question": getattr(d, "question", "") or "",
+                    }
+                )
+            return sources
+
+        def _merge_sources(primary, secondary):
+            """중복 제거하면서 병합 (filename+category+source_type 기준)"""
+            merged = []
+            seen = set()
+            for item in (primary or []) + (secondary or []):
+                if not isinstance(item, dict):
+                    continue
+                key = (
+                    item.get("source_type", "rag"),
+                    item.get("filename", ""),
+                    item.get("category", ""),
+                    item.get("doc_id", ""),
+                    item.get("qna_id", ""),
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(item)
+            return merged
         
         # --- Prompt Selection Logic ---
         prompt = ""
@@ -434,6 +465,9 @@ def generate_node(state: AgentState) -> AgentState:
             
             formatted_qna = format_qna_docs(qna_docs)
             log_context = formatted_qna
+
+            # [추가] QnA 출처 저장 (유사도 점수 제외)
+            state["rag_sources"] = _build_qna_sources(qna_docs)
             
             prompt = QNA_GREEN_PROMPT_TEMPLATE.format(
                 question=original_question,
@@ -454,6 +488,11 @@ def generate_node(state: AgentState) -> AgentState:
                 qna_context=formatted_qna,
                 context=docs_context
             )
+
+            # [추가] QnA 출처 + (있다면) 기존 RAG 출처 병합
+            qna_sources = _build_qna_sources(qna_docs)
+            existing_sources = state.get("rag_sources") or []
+            state["rag_sources"] = _merge_sources(qna_sources, existing_sources)
             
         else:
             # Red or Normal Mode
@@ -481,6 +520,26 @@ def generate_node(state: AgentState) -> AgentState:
                 docs_context=docs_context
             )
         
+        # [로깅] 최종 사용된 출처 정보 출력
+        used_sources = state.get("rag_sources", [])
+        if used_sources:
+            log_sources = []
+            for src in used_sources:
+                source_type = src.get('source_type', 'rag')
+                filename = src.get('filename', 'unknown')
+                
+                if source_type == 'qna':
+                    q_text = src.get('question', '')
+                    if len(q_text) > 15:
+                        q_text = q_text[:15] + "..."
+                    log_sources.append(f"QnA '{q_text}': {filename}")
+                else:
+                    log_sources.append(f"{source_type}:{filename}")
+            
+            logger.info(f"📚 최종 사용된 출처 ({len(used_sources)}개): {', '.join(log_sources)}")
+        else:
+            logger.info("📚 사용된 출처 없음")
+
         # 답변 생성
         response = agent_chat_model.invoke([
             SystemMessage(content=prompt),
@@ -494,104 +553,11 @@ def generate_node(state: AgentState) -> AgentState:
         # 메시지에 추가
         state["messages"] = [response]
         
-        logger.info(f"답변 생성 완료 (모드: {mode_log}, 시도: {attempts})")
+        logger.info(f"답변 생성 완료 (모드: {mode_log})")
         
     except Exception as e:
         logger.error(f"답변 생성 실패: {str(e)}", exc_info=True)
         state["response"] = "죄송합니다. 답변 생성 중 오류가 발생했습니다."
         state["is_emergency"] = False
-    
-    return state
-
-
-def grade_hallucination_node(state: AgentState) -> AgentState:
-    """
-    Grade Hallucination Node
-    """
-    logger.info("--- [NODE] Grade Hallucination Start ---")
-    question = state.get("original_question") or state.get("question", "")
-    response = state.get("response", "")
-    retrieved_docs = state.get("retrieved_docs", [])
-    qna_docs = state.get("qna_docs", [])
-    qna_score = state.get("qna_score", 0.0)
-    
-    if not response:
-        state["_hallucination_score"] = 0.0
-        state["_hallucination_passed"] = False
-        return state
-    
-    if not evaluation_chat_model:
-        state["_hallucination_score"] = 0.8
-        state["_hallucination_passed"] = True
-        return state
-    
-    try:
-        # 검증 대상 문서 선택
-        context_docs = []
-        mode_log = "Red"
-        
-        if qna_score >= 0.9 and qna_docs:
-            mode_log = "Green"
-            # QnADoc는 Pydantic 모델
-            docs_summary = "\n참조 문서 (QnA):\n"
-            for i, doc in enumerate(qna_docs[:3], 1):
-                docs_summary += f"{i}. Q: {doc.question}\nA: {doc.answer}\n"
-        elif qna_score >= 0.7:
-            mode_log = "Yellow"
-            docs_summary = "\n참조 문서 (QnA + General):\n"
-            if qna_docs:
-                for i, doc in enumerate(qna_docs[:2], 1):
-                    docs_summary += f"QnA {i}: {doc.answer[:100]}...\n"
-            if retrieved_docs:
-                for i, doc in enumerate(retrieved_docs[:2], 1):
-                    content = doc.get('content', '')
-                    docs_summary += f"Doc {i}: {content[:100]}...\n"
-        else:
-            mode_log = "Red"
-            docs_summary = "\n참조 문서:\n"
-            if retrieved_docs:
-                for i, doc in enumerate(retrieved_docs[:3], 1):
-                    content = doc.get('content', '')
-                    docs_summary += f"{i}. {content[:200]}...\n"
-            else:
-                docs_summary = "\n참조 문서가 없습니다.\n"
-        
-        evaluation_prompt = HALLUCINATION_CHECK_PROMPT_TEMPLATE.format(
-            question=question,
-            docs_summary=docs_summary,
-            response=response
-        )
-        
-        messages = [
-            SystemMessage(content="당신은 답변의 정확성과 환각을 평가하는 전문가입니다."),
-            HumanMessage(content=evaluation_prompt)
-        ]
-        
-        eval_response = evaluation_chat_model.invoke(messages)
-        response_text = eval_response.content.strip()
-        
-        try:
-            if "```json" in response_text:
-                response_text = response_text.split("```json")[1].split("```")[0].strip()
-            elif "```" in response_text:
-                response_text = response_text.split("```")[1].split("```")[0].strip()
-            
-            evaluation_result = json.loads(response_text)
-            score = float(evaluation_result.get("score", 0.5))
-            has_hallucination = evaluation_result.get("has_hallucination", False)
-            
-            state["_hallucination_score"] = max(0.0, min(1.0, score))
-            state["_hallucination_passed"] = score >= 0.7 and not has_hallucination
-            
-            logger.info(f"환각 평가 ({mode_log}): 통과={state['_hallucination_passed']}")
-            
-        except Exception:
-            state["_hallucination_score"] = 0.7
-            state["_hallucination_passed"] = True
-        
-    except Exception as e:
-        logger.error(f"환각 평가 실패: {str(e)}")
-        state["_hallucination_score"] = 0.7
-        state["_hallucination_passed"] = True
     
     return state

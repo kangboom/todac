@@ -10,7 +10,6 @@ from app.agent.nodes import (
     grade_documents_node,
     rewrite_query_node,
     generate_node,
-    grade_hallucination_node,
     retrieve_qna_node  # [추가]
 )
 from app.agent.tools import milvus_knowledge_search, report_emergency
@@ -121,27 +120,6 @@ def route_doc_relevance(state: AgentState) -> str:
     return "rewrite"
 
 
-def route_hallucination(state: AgentState) -> str:
-    """
-    환각 평가 결과에 따른 라우팅
-    - 점수 통과: "end" (최종 답변 반환)
-    - 점수 미달: "generate" (재생성) 또는 "end" (최대 시도 도달)
-    """
-    hallucination_passed = state.get("_hallucination_passed", False)
-    attempts = state.get("_generation_attempts", 0)
-    max_attempts = state.get("_max_generation_attempts", 3)
-    
-    if hallucination_passed:
-        logger.info("환각 평가 통과. 최종 답변 반환.")
-        return "end"
-    elif attempts < max_attempts:
-        logger.warning(f"환각 평가 미통과. 답변 재생성 시도 ({attempts}/{max_attempts})")
-        return "generate"
-    else:
-        logger.warning(f"최대 생성 시도 횟수({max_attempts}) 도달. 현재 답변 반환.")
-        return "end"
-
-
 def route_qna_check(state: AgentState) -> str:
     """
     [Strategy B] QnA 검색 결과에 따른 라우팅 (Green Signal Check)
@@ -194,8 +172,7 @@ def create_agent_graph():
     workflow.add_node("grade_docs", grade_documents_node)  # 검색 결과 관련성 평가
     workflow.add_node("rewrite", rewrite_query_node)  # 질문 재구성
     workflow.add_node("generate", generate_node)  # 답변 생성
-    workflow.add_node("grade_hallucination", grade_hallucination_node)  # 환각 및 정확도 체크
-    
+
     # 엣지 연결
     
     # 1. START -> QnA 검색 (항상 먼저 실행)
@@ -245,18 +222,8 @@ def create_agent_graph():
     # 6. rewrite -> agent (재검색을 위해 다시 agent로)
     workflow.add_edge("rewrite", "agent")
     
-    # 7. generate -> grade_hallucination
-    workflow.add_edge("generate", "grade_hallucination")
-    
-    # 8. grade_hallucination -> END (점수 통과) 또는 generate (재생성) 또는 END (최대 시도)
-    workflow.add_conditional_edges(
-        "grade_hallucination",
-        route_hallucination,
-        {
-            "end": END,  # 최종 답변 반환
-            "generate": "generate"  # 답변 재생성
-        }
-    )
+    # 7. generate -> END (바로 종료)
+    workflow.add_edge("generate", END)
     
     # 그래프 컴파일
     app = workflow.compile()

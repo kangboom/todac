@@ -36,7 +36,7 @@ AGENT_GUIDELINE = """
 
 1. **`report_emergency` 호출 기준 (응급 상황 보고)**
    - **사용 시점**: 
-     - 아기에게 **"현재 진행 중인"** 위험 증상이 감지될 때
+     - 아기에게 **"현재 진행 중인"** 목숨과 연관된 위험 증상이 감지될 때
      - 이 도구와 함께 milvus_knowledge_search를 호출하는 것이 좋습니다.    
 
    - **판단 기준**:
@@ -171,24 +171,6 @@ REWRITE_QUERY_PROMPT_TEMPLATE = """사용자의 원래 질문과 이전 검색 �
 2. 구체적인 증상이나 상황 키워드를 추가하세요.
 
 재구성된 질문만 출력하세요 (설명 없이):"""
-
-# 환각/정확도 체크
-HALLUCINATION_CHECK_PROMPT_TEMPLATE = """다음 질문, 참조 문서, 생성된 답변을 평가하세요.
-
-질문: {question}
-
-참조 문서:
-{docs_summary}
-
-생성된 답변:
-{response}
-
-평가 기준:
-1. 환각(Hallucination): 참조 문서에 없는 내용을 지어냈는가?
-2. 정확성(Accuracy): 참조 문서와 일치하는가?
-3. 관련성(Relevance): 질문에 적절한 답변인가?
-
-응답 형식: JSON (score: 0.0~1.0, has_hallucination: bool, reason: string)"""
 
 
 # =============================================================================
