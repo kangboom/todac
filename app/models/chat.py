@@ -28,6 +28,9 @@ class ChatSession(Base):
     is_active = Column(Boolean, default=True, nullable=False)
     started_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    
+    # [추가] 대화 상태 저장 (Context 유지용)
+    missing_info = Column(JSONB, nullable=True, comment="부족한 정보 목록 (예: ['아기 월령', '수유량']) - 다음 턴에서 참조")
 
     # 관계 설정
     user = relationship("User", back_populates="chat_sessions")

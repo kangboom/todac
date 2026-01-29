@@ -5,6 +5,7 @@ from typing import List, Dict, Any, Optional
 from langchain_openai import OpenAIEmbeddings
 from langchain_core.tools import tool
 from pymilvus import Collection
+from app.services.qna_service import search_qna # [추가]
 from app.core.database import get_milvus_collection
 from app.core.config import settings
 import logging
@@ -19,6 +20,56 @@ embeddings = OpenAIEmbeddings(
 
 # Milvus 컬렉션 이름
 MILVUS_COLLECTION_NAME = "knowledge_base"
+
+
+@tool
+def retrieve_qna(query: str) -> str:
+    """
+    미숙아 및 신생아 관련 공식 QnA(질문-답변) 데이터베이스를 검색합니다.
+    검색된 결과는 '질문(Question)'과 '답변(Answer)' 형태로 제공됩니다.
+    
+    이 도구는 사용자의 질문과 가장 유사한 기존의 전문적인 QnA 세트를 찾을 때 사용합니다.
+    
+    Args:
+        query: 검색할 질문 내용 (예: "미숙아 수유량", "퇴원 후 관리")
+        
+    Returns:
+        JSON 형식의 문자열 리스트 (검색된 QnA 목록)
+    """
+    try:
+        logger.info(f"=== QnA 검색 시작 (Tool) ===")
+        logger.info(f"검색 질문: {query}")
+        
+        # QnA 서비스 호출
+        results = search_qna(query)
+        
+        if not results:
+            logger.info("QnA 검색 결과 없음")
+            return "검색된 QnA 결과가 없습니다."
+            
+        # 결과를 JSON 문자열로 변환 (ToolMessage Content용)
+        # DTO 객체를 dict로 변환
+        serialized_results = []
+        logger.info(f"✅[QnA 검색 결과]")
+        for doc in results:
+            serialized_results.append({
+                "id": str(getattr(doc, "id", "")),
+                "question": getattr(doc, "question", ""),
+                "answer": getattr(doc, "answer", ""),
+                "source": getattr(doc, "source", ""),
+                "category": getattr(doc, "category", ""),
+                "score": getattr(doc, "score", 0.0)
+            })
+            logger.info(f"{doc.question}")
+            
+        import json
+        json_result = json.dumps(serialized_results, ensure_ascii=False)
+        logger.info(f"QnA 검색 완료: {len(results)}개 항목 반환")
+        return json_result
+        
+    except Exception as e:
+        logger.error(f"QnA 검색 실패: {str(e)}", exc_info=True)
+        return "QnA 검색 중 오류가 발생했습니다."
 
 
 def get_embedding(text: str) -> List[float]:

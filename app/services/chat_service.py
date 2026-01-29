@@ -167,28 +167,32 @@ def send_message(
         # 현재 질문 추가
         history_messages.append(HumanMessage(content=question))
 
+        # 세션에서 이전 턴의 missing_info 불러오기
+        prev_missing_info = session.missing_info if session.missing_info else None
+        
+        # [수정] 이전 턴의 최초 질문이 있다면 복원 (없으면 현재 질문 사용)
+        restored_previous_question = question
+        if prev_missing_info and isinstance(prev_missing_info, dict):
+            restored_previous_question = prev_missing_info.get("pending_question", question)
+
         initial_state: AgentState = {
             "question": question,
-            "original_question": question,  # 원본 질문 초기화
+            "previous_question": restored_previous_question,  # [수정] 복원된 질문 적용
             "session_id": session.id,
             "user_id": user_id,
             "messages": history_messages,
             "baby_info": _prepare_baby_info(baby).model_dump(),  # DTO -> Dict 변환
-            "retrieved_docs": [],
-            "rag_retrieval_attempts": 0,
-            "min_rag_score": settings.MIN_RAG_SCORE_THRESHOLD,
-            "_rag_score_passed": False,  # 초기값: False
+            "_retrieved_docs": [],
+            "_qna_docs": [],
             # Self-RAG 관련 필드
             "_doc_relevance_score": None,
             "_doc_relevance_passed": False,
-            "_hallucination_score": None,
-            "_hallucination_passed": False,
-            "_generation_attempts": 0,
-            "_max_generation_attempts": 3,  # 최대 생성 시도 횟수
+            "_missing_info": prev_missing_info, # [수정] DB에서 복원
+            "is_retry": False, # 기본값 False
             "response": "",
             "is_emergency": False,
-            "rag_sources": None,
-            "response_time": None
+            "response_time": None,
+            "_intent": None
         }
         
         # 5. 에이전트 그래프 가져오기 및 실행
@@ -210,19 +214,51 @@ def send_message(
         db.add(user_message)
         
         # 8. AI 응답 DB 저장
+        # 문서 객체에서 소스 정보 추출
+        extracted_rag_sources = []
+        retrieved_docs = final_state.get("_retrieved_docs", [])
+        for doc in retrieved_docs:
+            extracted_rag_sources.append({
+                "doc_id": str(getattr(doc, "doc_id", "")),
+                "chunk_index": getattr(doc, "chunk_index", ""),
+                "score": getattr(doc, "score", 0.0),
+                "filename": getattr(doc, "filename", ""),
+                "category": getattr(doc, "category", "")
+            })
+            
+        extracted_qna_sources = []
+        qna_docs = final_state.get("_qna_docs", [])
+        for doc in qna_docs:
+            extracted_qna_sources.append({
+                "source_type": "qna",
+                "qna_id": str(getattr(doc, "id", "") or ""),
+                "filename": getattr(doc, "source", "") or "",
+                "category": getattr(doc, "category", "") or "",
+                "question": getattr(doc, "question", "") or "",
+            })
+            
+        # DB에는 rag_sources 컬럼 하나뿐이므로 합쳐서 저장 (데이터 유실 방지)
+        combined_sources = []
+        combined_sources.extend(extracted_rag_sources)
+        combined_sources.extend(extracted_qna_sources)
+
         assistant_message = ChatMessage(
             session_id=session.id,
             role=MessageRole.ASSISTANT.value,
             content=final_state.get("response", ""),
             is_emergency=final_state.get("is_emergency", False),
-            rag_sources=final_state.get("rag_sources")
+            rag_sources=combined_sources if combined_sources else None
         )
         db.add(assistant_message)
         
-        # 9. 세션 제목 업데이트 (첫 메시지인 경우)
+        # 9. 세션 정보 업데이트
+        # 다음 턴을 위해 missing_info 저장 (없으면 None)
+        session.missing_info = final_state.get("_missing_info")
+        session.updated_at = datetime.now() # updated_at 갱신
+
+        # 세션 제목 업데이트 (첫 메시지인 경우)
         if not session.title:
             session.title = question[:50]  # 첫 50자
-            session.updated_at = datetime.now()
         
         db.commit()
         
@@ -232,7 +268,8 @@ def send_message(
             response=final_state.get("response", ""),
             session_id=str(session.id),
             is_emergency=final_state.get("is_emergency", False),
-            rag_sources=final_state.get("rag_sources"),
+            rag_sources=extracted_rag_sources,
+            qna_sources=extracted_qna_sources,
             response_time=response_time
         )
         

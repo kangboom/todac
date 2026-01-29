@@ -27,6 +27,7 @@ class ChatMessageResponse(BaseModel):
     content: str
     is_emergency: bool
     rag_sources: Optional[List[Dict[str, Any]]] = None
+    qna_sources: Optional[List[Dict[str, Any]]] = None
     created_at: datetime
 
 
@@ -55,6 +56,7 @@ class ChatMessageSendResponse(BaseModel):
     session_id: str = Field(..., description="세션 ID")
     is_emergency: bool = Field(..., description="응급 상황 여부")
     rag_sources: Optional[List[Dict[str, Any]]] = Field(None, description="참조 문서 정보")
+    qna_sources: Optional[List[Dict[str, Any]]] = Field(None, description="QnA 참조 정보")
     response_time: float = Field(..., description="응답 시간 (초)")
 
 

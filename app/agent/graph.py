@@ -7,31 +7,51 @@ from langchain_core.messages import ToolMessage
 from app.agent.state import AgentState
 from app.agent.nodes import (
     agent_node,
-    grade_documents_node,
-    rewrite_query_node,
+    evaluate_node,
+    analyze_missing_info_node,
+    create_query_from_info_node, 
     generate_node,
-    retrieve_qna_node  # [추가]
+    intent_classifier_node, 
 )
-from app.agent.tools import milvus_knowledge_search, report_emergency
+from app.agent.tools import milvus_knowledge_search, report_emergency, retrieve_qna
 from app.core.config import settings
 import logging
 
 logger = logging.getLogger(__name__)
 
 
+def route_intent(state: AgentState) -> str:
+    """
+    의도 분류 결과에 따른 라우팅
+    - relevant: "agent" (기존 플로우 시작)
+    - irrelevant: END (단순 응답 후 종료)
+    - provide_missing_info: "create_query_from_info" (부족한 정보 반영하여 질문 생성)
+    """
+    intent = state.get("_intent", "relevant")
+    
+    if intent == "irrelevant":
+        logger.info("🚫 질문이 아기 돌봄과 관련이 없습니다 -> 단순 응답 후 종료")
+        return END
+        
+    if intent == "provide_missing_info":
+        logger.info("ℹ️ 부족했던 정보 제공 확인 -> 질문 재생성(create_query_from_info)으로 진행")
+        return "create_query_from_info"
+    
+    logger.info("✅ 질문이 관련성이 있습니다 -> agent 노드 진입")
+    return "agent"
+
+
 def should_continue(state: AgentState) -> str:
     """
     Agent Node에서 Tool 호출 여부 결정
     - Tool 호출이 있으면 "tools" (tool 실행)
-    - Tool 호출이 없으면:
-      - Yellow Mode (QnA >= 0.7): "generate" (QnA 기반 답변 생성)
-      - Red Mode (QnA < 0.7): "end" (LLM 직접 답변 완료)
-    - 응급 응답이 있으면 "end" (응급 응답 완료)
+    - Tool 호출이 없고, 참고할 문서(retrieved_docs/qna_docs)가 있으면 "evaluate_node" (평가)
+    - 둘 다 없으면 END (직접 답변 후 종료)
     """
-    # 하지만 메시지 확인을 위해 먼저 변수 할당
     messages = state.get("messages", [])
     if not messages:
-        return "end"
+        # 메시지가 없는 예외적인 경우 안전하게 종료
+        return END
     
     last_message = messages[-1]
     
@@ -46,117 +66,52 @@ def should_continue(state: AgentState) -> str:
         logger.info("Tool 호출이 감지되었습니다. Tool 실행으로 진행합니다.")
         return "tools"
 
-    # 2. Generate 진입 조건 확인 (Yellow Mode 또는 응급 상황)
-    # 응급 상황이거나 QnA 점수가 높으면 답변 생성 노드로 이동
-    qna_score = state.get("qna_score", 0.0)
-    is_emergency = state.get("is_emergency", False)
+    # 2. 문서 유무 확인 (문서가 하나라도 있어야 평가 진행)
+    retrieved_docs = state.get("_retrieved_docs", [])
+    qna_docs = state.get("_qna_docs", [])
     
-    if qna_score >= 0.7 or is_emergency:
-        reason = "응급 상황" if is_emergency else f"Yellow Mode (Score: {qna_score:.2f})"
-        logger.info(f"📝 {reason}: 답변 생성을 위해 Generate로 이동")
-        return "generate"
-        
-    logger.info("Tool 호출이 없고 Red Mode입니다. 직접 답변 완료.")
-    return "end"
+    if retrieved_docs or qna_docs:
+        logger.info("참고할 문서가 존재합니다. 문서 평가(evaluate_node)로 진행합니다.")
+        return "evaluate_node"
 
-
-def route_after_tools(state: AgentState) -> str:
-    """
-    Tool 실행 후 라우팅
-    - milvus_knowledge_search 실행 결과: "grade_docs"
-    - emergency_protocol_handler 실행 결과: "agent" (다시 에이전트로 돌아가서 응답 처리)
-    """
-    messages = state.get("messages", [])
-    if not messages:
-        return "agent"
+    # 3. Tool 호출도 없고 문서도 없으면 종료 (직접 답변)
+    logger.info("Tool 호출과 참고 문서가 없습니다. 직접 답변 후 종료합니다.")
+    return END
         
-    last_message = messages[-1]
-    
-    # 마지막 메시지가 ToolMessage인 경우
-    if isinstance(last_message, ToolMessage):
-        tool_name = getattr(last_message, "name", "")
-        
-        # Tool 이름이 없으면(LangGraph 버전에 따라 다를 수 있음) 내용으로 추론
-        if not tool_name:
-            content = last_message.content
-            if isinstance(content, list): # 검색 결과는 보통 리스트
-                tool_name = "milvus_knowledge_search"
-        
-        # [수정] 검색 툴이 포함되어 있으면 우선적으로 문서 평가로 이동
-        if tool_name == "milvus_knowledge_search":
-            logger.info("RAG 검색 결과입니다. 문서 평가로 진행합니다.")
-            return "grade_docs"
-            
-    # fallback: 알 수 없는 경우 agent로
-    return "agent"
 
 
 def route_doc_relevance(state: AgentState) -> str:
     """
     문서 관련성 평가 결과에 따른 라우팅
     - 관련성 높음: "generate" (답변 생성)
-    - 관련성 낮음: "rewrite" (질문 재구성)
-      - 단, 최대 검색 시도 횟수(1회)를 초과하거나 응급 상황인 경우 강제로 "generate"로 이동
+    - 관련성 낮음: "analyze_missing_info" (부족한 정보 분석 및 요청)
+      - 단, 응급 상황인 경우 강제로 "generate"로 이동
     """
     relevance_passed = state.get("_doc_relevance_passed", False)
-    rag_retrieval_attempts = state.get("rag_retrieval_attempts", 0)
-    is_emergency = state.get("is_emergency", False)
+    is_retry = state.get("is_retry", False)
     
     if relevance_passed:
         logger.info("문서 관련성이 높습니다. 답변 생성으로 진행합니다.")
         return "generate"
     
-    # [수정] 응급 상황이면 재검색 없이 바로 생성으로 이동
-    if is_emergency:
-        logger.info("🚨 응급 상황이므로 문서 관련성이 낮아도 바로 답변 생성으로 진행합니다.")
+    # [수정] 응급 상황 또는 재시도 상황이면 정보가 부족해도(관련성이 낮아도) 일단 답변 시도
+    if is_retry:
+        logger.info("🔄 재시도(is_retry) 상황이므로 문서 관련성이 낮아도 강제로 답변을 생성합니다.")
         return "generate"
     
-    # [추가] 최대 시도 횟수 초과 체크
-    if rag_retrieval_attempts >= 1:  # 최대 1회만 재구성
-        logger.warning(f"문서 관련성이 낮지만 최대 검색 시도(1)에 도달하여 답변 생성을 강제합니다.")
-        return "generate"
-        
-    logger.info(f"문서 관련성이 낮습니다 (시도 {rag_retrieval_attempts}). 질문 재구성으로 진행합니다.")
-    return "rewrite"
-
-
-def route_qna_check(state: AgentState) -> str:
-    """
-    [Strategy B] QnA 검색 결과에 따른 라우팅 (Green Signal Check)
-    - Score >= 0.9: Green -> 바로 생성
-    - Score < 0.9: Yellow/Red -> Agent로 이동하여 추가 탐색
-    """
-    qna_score = state.get("qna_score", 0.0)
-    
-    if qna_score >= 0.9:
-        logger.info(f"🚀 Green Mode (Score: {qna_score:.2f}): QnA 결과로 바로 답변 생성")
-        return "generate"
-    else:
-        logger.info(f"🚦 Score {qna_score:.2f}: Agent로 이동하여 추가 탐색 (Yellow/Red)")
-        return "agent"
+    logger.info("문서 관련성이 낮습니다. 부족한 정보 분석(analyze_missing_info)으로 진행합니다.")
+    return "analyze_missing_info"
 
 
 def create_agent_graph():
     """
     LangGraph 에이전트 그래프 생성 (Self-RAG 구조)
-    
-    플로우:
-    START → retrieve_qna → [Green?]
-      - Yes → generate
-      - No (Yellow/Red) → agent → [tool 호출?]
-        - Yes → tools → grade_docs → [관련성 높음?]
-          - Yes → generate → grade_hallucination → [점수 통과?]
-            - Yes → END
-            - No → generate (재시도) 또는 END (최대 시도)
-          - No → rewrite → agent
-        - No → [Yellow?]
-          - Yes (Yellow) -> generate (QnA 기반 생성)
-          - No (Red) -> END (직접 답변)
     """
     # Tool 정의 (모든 tool을 LLM에 제공)
     tools = [
         milvus_knowledge_search,  # RAG 검색 tool
         report_emergency,         # 응급 상태 보고 tool
+        retrieve_qna,             # [추가] QnA 검색 tool
     ]
     
     # StateGraph 생성
@@ -166,61 +121,59 @@ def create_agent_graph():
     tool_node = ToolNode(tools)
     
     # 노드 추가
-    workflow.add_node("retrieve_qna", retrieve_qna_node) # [추가] QnA 검색
+    workflow.add_node("intent_classifier", intent_classifier_node) # 의도분석
+    workflow.add_node("create_query_from_info", create_query_from_info_node) # [추가] 정보 기반 질문 생성
     workflow.add_node("agent", agent_node)  # 질문 분석/도구 호출 결정
     workflow.add_node("tools", tool_node)  # ToolNode: Vector DB 검색
-    workflow.add_node("grade_docs", grade_documents_node)  # 검색 결과 관련성 평가
-    workflow.add_node("rewrite", rewrite_query_node)  # 질문 재구성
+    workflow.add_node("evaluate_node", evaluate_node)  # 검색 결과 관련성 평가
+    workflow.add_node("analyze_missing_info", analyze_missing_info_node)  # [변경] 부족한 정보 분석
     workflow.add_node("generate", generate_node)  # 답변 생성
 
     # 엣지 연결
     
-    # 1. START -> QnA 검색 (항상 먼저 실행)
-    workflow.add_edge(START, "retrieve_qna")
+    # 0. START -> 의도 분류 (가장 먼저 실행)
+    workflow.add_edge(START, "intent_classifier")
     
-    # 2. QnA 결과 분기 (Green vs Yellow/Red)
+    # 1. 의도 분류 결과 분기
     workflow.add_conditional_edges(
-        "retrieve_qna",
-        route_qna_check,
+        "intent_classifier",
+        route_intent,
         {
-            "generate": "generate",
-            "agent": "agent"
+            "agent": "agent",   # 관련 있음 -> 기존 플로우 진입
+            "create_query_from_info": "create_query_from_info", # 정보 제공 -> 질문 재생성
+            END: END # 관련 없음 -> 종료 (이미 응답 생성됨)
         }
     )
     
-    # 3. Agent -> Tools 결정
+    # 1.5 create_query_from_info -> agent (질문 재생성 후 검색 수행)
+    workflow.add_edge("create_query_from_info", "agent")
+    
+    # 2. Agent -> Tools 결정 (QnA 노드 분기 삭제됨)
     workflow.add_conditional_edges(
         "agent",
         should_continue,
         {
             "tools": "tools",  # ToolNode: Tool 실행 및 ToolMessage 자동 추가
-            "end": END,  # 도구 없이 직접 답변 완료 (Red Mode)
-            "generate": "generate" # [추가] Yellow Mode (QnA 반영)
+            "evaluate_node": "evaluate_node", # Tool 호출 없으면 평가 단계로
+            END: END # [추가] Tool 호출도 문서도 없으면 종료
         }
     )
     
-    # 4. Tools 실행 후 -> 라우팅 (milvus_knowledge_search는 grade_docs, 나머지는 agent)
-    workflow.add_conditional_edges(
-        "tools",
-        route_after_tools,
-        {
-            "grade_docs": "grade_docs",
-            "agent": "agent"
-        }
-    )
+    # 4. Tools 실행 후 -> 다시 Agent로 가서 결과 수집
+    workflow.add_edge("tools", "agent")
     
-    # 5. grade_docs -> generate (관련성 높음) 또는 rewrite (관련성 낮음)
+    # 5. evaluate_node -> generate (관련성 높음) 또는 analyze_missing_info (관련성 낮음)
     workflow.add_conditional_edges(
-        "grade_docs",
+        "evaluate_node",
         route_doc_relevance,
         {
             "generate": "generate",  # 답변 생성
-            "rewrite": "rewrite"  # 질문 재구성
+            "analyze_missing_info": "analyze_missing_info"  # 질문 재구성
         }
     )
     
-    # 6. rewrite -> agent (재검색을 위해 다시 agent로)
-    workflow.add_edge("rewrite", "agent")
+    # 6. analyze_missing_info -> END (사용자에게 되묻고 종료)
+    workflow.add_edge("analyze_missing_info", END)
     
     # 7. generate -> END (바로 종료)
     workflow.add_edge("generate", END)
