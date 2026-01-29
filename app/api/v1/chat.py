@@ -43,7 +43,7 @@ async def send_message(
     
     세션이 없으면 자동으로 새 세션을 생성하고, 있으면 기존 세션에 메시지를 추가합니다.
     """
-    return chat_service.send_message(
+    return await chat_service.send_message(
         db=db,
         user_id=current_user.id,
         baby_id=request.baby_id,

@@ -23,7 +23,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(oauth2_scheme)]
 )
-async def create_baby(
+def create_baby(
     request: BabyCreateRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -47,7 +47,7 @@ async def create_baby(
     response_model=List[BabyResponse],
     dependencies=[Depends(oauth2_scheme)]
 )
-async def get_my_babies(
+def get_my_babies(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -61,7 +61,7 @@ async def get_my_babies(
     response_model=BabyResponse,
     dependencies=[Depends(oauth2_scheme)]
 )
-async def get_baby(
+def get_baby(
     baby_id: str,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -76,7 +76,7 @@ async def get_baby(
     response_model=BabyResponse,
     dependencies=[Depends(oauth2_scheme)]
 )
-async def update_baby(
+def update_baby(
     baby_id: str,
     request: BabyUpdateRequest,
     current_user: User = Depends(get_current_user),
@@ -92,7 +92,7 @@ async def update_baby(
     status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[Depends(oauth2_scheme)]
 )
-async def delete_baby(
+def delete_baby(
     baby_id: str,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -107,6 +107,6 @@ async def delete_baby(
     response_model=UserResponse,
     dependencies=[Depends(oauth2_scheme)]
 )
-async def get_me(current_user: User = Depends(get_current_user)):
+def get_me(current_user: User = Depends(get_current_user)):
     """현재 로그인한 사용자 정보 조회"""
     return UserResponse.model_validate(current_user)

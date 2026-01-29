@@ -39,3 +39,8 @@ docling>=2.64.0  # IBM Docling 문서 파서
 
 # AWS S3
 boto3>=1.42.0  # AWS S3 클라이언트
+
+# 비동기 워커 (TaskIQ)
+taskiq>=0.11.0
+taskiq-redis>=0.5.0
+redis>=5.0.0

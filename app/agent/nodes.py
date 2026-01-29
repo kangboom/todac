@@ -77,7 +77,7 @@ def _parse_json_from_response(text: str) -> dict:
         return {}
 
 
-def intent_classifier_node(state: AgentState) -> AgentState:
+async def intent_classifier_node(state: AgentState) -> AgentState:
     """
     의도 분류 노드
     질문이 '미숙아 돌봄' 범위인지 판단 + '부족한 정보 제공' 여부 판단
@@ -117,7 +117,8 @@ def intent_classifier_node(state: AgentState) -> AgentState:
         )
         messages = [HumanMessage(content=prompt)]
         
-        response = evaluation_chat_model.invoke(messages)
+        # [Async] invoke -> ainvoke
+        response = await evaluation_chat_model.ainvoke(messages)
         response_text = response.content.strip()
         
         # [수정] 공통 함수 사용
@@ -136,7 +137,8 @@ def intent_classifier_node(state: AgentState) -> AgentState:
                 simple_prompt = SIMPLE_RESPONSE_PROMPT_TEMPLATE.format(question=question)
                 # agent_chat_model을 사용하여 자연스러운 답변 생성
                 if agent_chat_model:
-                    resp = agent_chat_model.invoke([HumanMessage(content=simple_prompt)])
+                    # [Async] invoke -> ainvoke
+                    resp = await agent_chat_model.ainvoke([HumanMessage(content=simple_prompt)])
                     state["response"] = resp.content.strip()
                     state["messages"] = [resp]
                 else:
@@ -152,7 +154,7 @@ def intent_classifier_node(state: AgentState) -> AgentState:
     return state
 
 
-def create_query_from_info_node(state: AgentState) -> AgentState:
+async def create_query_from_info_node(state: AgentState) -> AgentState:
     """
     Create Query From Info Node
     부족했던 정보가 제공되면, 이를 원본 질문과 결합하여 새로운 검색 질문을 생성
@@ -188,7 +190,8 @@ def create_query_from_info_node(state: AgentState) -> AgentState:
     )
     
     try:
-        response = agent_chat_model.invoke([HumanMessage(content=prompt)])
+        # [Async] invoke -> ainvoke
+        response = await agent_chat_model.ainvoke([HumanMessage(content=prompt)])
         new_query = response.content.strip()
         
         logger.info(f"새로운 검색 질문 생성: '{new_query}'")
@@ -210,7 +213,7 @@ def create_query_from_info_node(state: AgentState) -> AgentState:
     return state
 
 
-def agent_node(state: AgentState) -> AgentState:
+async def agent_node(state: AgentState) -> AgentState:
     """
     핵심 에이전트 노드 (Self-RAG)
     - 질문 분석 및 tool 호출 결정
@@ -307,7 +310,8 @@ def agent_node(state: AgentState) -> AgentState:
         messages_with_system = [SystemMessage(content=system_prompt)] + messages
         
         # Agent 실행
-        response = model_with_tools.invoke(messages_with_system)
+        # [Async] invoke -> ainvoke
+        response = await model_with_tools.ainvoke(messages_with_system)
         
         # 툴 호출 확인하여 is_emergency 플래그 설정 (현재 턴의 호출 확인)
         # 이미 위에서 이전 턴의 report_emergency는 처리했지만, 이번 턴에 또 부를 수도 있음
@@ -351,7 +355,7 @@ def agent_node(state: AgentState) -> AgentState:
     return state
 
 
-def evaluate_node(state: AgentState) -> AgentState:
+async def evaluate_node(state: AgentState) -> AgentState:
     """
     Grade Documents Node (Self-RAG)
     검색된 문서의 질문 관련성을 평가
@@ -408,7 +412,8 @@ def evaluate_node(state: AgentState) -> AgentState:
             HumanMessage(content=evaluation_prompt)
         ]
         
-        response = evaluation_chat_model.invoke(messages)
+        # [Async] invoke -> ainvoke
+        response = await evaluation_chat_model.ainvoke(messages)
         response_text = response.content.strip()
         
         # [수정] 공통 함수 사용
@@ -469,7 +474,7 @@ def evaluate_node(state: AgentState) -> AgentState:
     return state
 
 
-def analyze_missing_info_node(state: AgentState) -> AgentState:
+async def analyze_missing_info_node(state: AgentState) -> AgentState:
     """
     Analyze Missing Info Node
     문서가 불충분할 때 사용자에게 필요한 정보를 되묻는 응답 생성
@@ -490,7 +495,8 @@ def analyze_missing_info_node(state: AgentState) -> AgentState:
     )
     
     try:
-        response = agent_chat_model.invoke([HumanMessage(content=prompt)])
+        # [Async] invoke -> ainvoke
+        response = await agent_chat_model.ainvoke([HumanMessage(content=prompt)])
         response_text = response.content.strip()
         
         # JSON 파싱
@@ -523,7 +529,7 @@ def analyze_missing_info_node(state: AgentState) -> AgentState:
     return state
 
 
-def generate_node(state: AgentState) -> AgentState:
+async def generate_node(state: AgentState) -> AgentState:
     """
     Generate Node (Self-RAG)
     검색된 문서를 바탕으로 최종 답변 생성 (Strategy B 제거 -> 통합 로직)
@@ -613,7 +619,8 @@ def generate_node(state: AgentState) -> AgentState:
             logger.info("📚 사용된 출처 없음")
 
         # 답변 생성
-        response = agent_chat_model.invoke([
+        # [Async] invoke -> ainvoke
+        response = await agent_chat_model.ainvoke([
             SystemMessage(content=prompt),
             HumanMessage(content=previous_question)
         ])

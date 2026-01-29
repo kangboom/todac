@@ -85,7 +85,7 @@ async def ingest_documents(
         )
     
     # 배치 업로드 실행 (단일 파일이어도 동일한 방식으로 처리)
-    results = knowledge_service.ingest_documents_batch(
+    results = await knowledge_service.ingest_documents_batch(
         db=db,
         files=files,
         category=category,
@@ -108,7 +108,7 @@ async def ingest_documents(
     response_model=DocumentListResponse,
     dependencies=[Depends(oauth2_scheme)]
 )
-async def get_documents(
+def get_documents(
     category: Optional[str] = Query(None, description="카테고리 필터"),
     limit: int = Query(100, ge=1, le=1000, description="최대 개수"),
     offset: int = Query(0, ge=0, description="오프셋"),
@@ -150,7 +150,7 @@ async def get_documents(
     status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[Depends(oauth2_scheme)]
 )
-async def delete_document(
+def delete_document(
     doc_id: str,
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_db)
@@ -174,4 +174,3 @@ async def delete_document(
     
     knowledge_service.delete_document(db=db, doc_id=doc_uuid)
     return None
-

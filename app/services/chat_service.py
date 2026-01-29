@@ -107,7 +107,7 @@ def _get_conversation_history(
     ]
 
 
-def send_message(
+async def send_message(
     db: Session,
     user_id: uuid.UUID,
     baby_id: uuid.UUID,
@@ -198,7 +198,7 @@ def send_message(
         # 5. 에이전트 그래프 가져오기 및 실행
         logger.info(f"에이전트 실행 시작: session_id={session.id}, question={question[:50]}...")
         agent_graph = get_agent_graph()  # 여기서 그래프 인스턴스 생성/가져오기
-        final_state = agent_graph.invoke(initial_state)
+        final_state = await agent_graph.ainvoke(initial_state)
         
         # 6. 응답 시간 계산
         response_time = time.time() - start_time

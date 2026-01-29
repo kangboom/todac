@@ -11,6 +11,7 @@ services:
       - .env
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://redis:6379
       - MILVUS_HOST=milvus
       - MILVUS_PORT=19530
       - SECRET_KEY=${SECRET_KEY:-your-secret-key-change-in-production}
@@ -30,9 +31,38 @@ services:
         condition: service_healthy
       milvus:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
       - todac-network
 
+  # TaskIQ Worker
+  worker:
+    image: kangbb/todac-backend:latest
+    container_name: todac-worker
+    command: ["taskiq", "worker", "app.core.taskiq:broker", "app.worker.tasks"]
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://redis:6379
+      - MILVUS_HOST=milvus
+      - MILVUS_PORT=19530
+      - SECRET_KEY=${SECRET_KEY:-your-secret-key-change-in-production}
+      - ALGORITHM=HS256
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - LLAMAPARSE_API_KEY=${LLAMAPARSE_API_KEY:-}
+      - OPENAI_MODEL_EMBEDDING=${OPENAI_MODEL_EMBEDDING:-text-embedding-3-small}
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - todac-network
 
   # PostgreSQL 데이터베이스
   postgres:
@@ -48,6 +78,21 @@ services:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - todac-network
+
+  # Redis
+  redis:
+    image: redis:7-alpine
+    container_name: todac-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5

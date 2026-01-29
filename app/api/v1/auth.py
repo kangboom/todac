@@ -27,7 +27,7 @@ def set_refresh_token_cookie(response: Response, refresh_token: str):
 
 
 @router.post("/signup", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
-async def signup(request: SignupRequest, response: Response, db: Session = Depends(get_db)):
+def signup(request: SignupRequest, response: Response, db: Session = Depends(get_db)):
     """
     회원가입
     
@@ -66,7 +66,7 @@ async def signup(request: SignupRequest, response: Response, db: Session = Depen
 
 
 @router.post("/login", response_model=AuthResponse)
-async def login(request: LoginRequest, response: Response, db: Session = Depends(get_db)):
+def login(request: LoginRequest, response: Response, db: Session = Depends(get_db)):
     """
     로그인 (JSON 형식)
     
@@ -92,7 +92,7 @@ async def login(request: LoginRequest, response: Response, db: Session = Depends
 
 
 @router.post("/refresh", response_model=TokenResponse)
-async def refresh_token(
+def refresh_token(
     response: Response,
     refresh_token: Optional[str] = Cookie(None),
     db: Session = Depends(get_db)
@@ -130,7 +130,7 @@ async def refresh_token(
 
 
 @router.post("/token", response_model=dict)
-async def login_for_access_token(
+def login_for_access_token(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db)
 ):
