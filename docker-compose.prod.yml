@@ -4,7 +4,7 @@ services:
   backend:
     restart: always
     environment:
-      - DEBUG=False
+      - DEBUG=True
     networks:
       - todac-network
       - npm_network
