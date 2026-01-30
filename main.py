@@ -5,7 +5,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
-from app.api.v1 import auth, users, chat
+from app.api.v1 import auth, users, chat, feedback
 from app.api.v1.admin import (
     knowledge as admin_knowledge,
     dashboard as admin_dashboard,
@@ -117,6 +117,7 @@ async def health_check():
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
 app.include_router(users.router, prefix="/api/v1", tags=["users"])
 app.include_router(chat.router, prefix="/api/v1", tags=["chat"])
+app.include_router(feedback.router, prefix="/api/v1", tags=["feedback"])
 app.include_router(admin_knowledge.router, prefix="/api/v1", tags=["admin"])
 app.include_router(admin_dashboard.router, prefix="/api/v1", tags=["admin"])
 app.include_router(admin_qna.router, prefix="/api/v1/admin/qna", tags=["admin-qna"]) # [추가]
