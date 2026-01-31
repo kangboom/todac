@@ -212,7 +212,6 @@ async def send_message(
         # [수정] astream_events를 사용하여 토큰 단위 스트리밍 구현
         async for event in agent_graph.astream_events(initial_state, version="v1"):
             event_type = event.get("event")
-            name = event.get("name")
             data = event.get("data", {})
             tags = event.get("tags", [])
             
@@ -238,21 +237,22 @@ async def send_message(
                     if "_qna_docs" in output:
                         captured_qna_docs = output["_qna_docs"]
                 
-                # LangGraph 전체 종료
-                if name == "LangGraph":
-                    output = data.get("output")
-                    if output and isinstance(output, dict):
+                # LangGraph 또는 노드 종료 시 상태 업데이트
+                if output and isinstance(output, dict):
+                    # 1. 일반적인 State 딕셔너리인 경우 (바로 갱신)
+                    if "_missing_info" in output or "messages" in output:
                         final_state = output
-                # 개별 노드 종료 (필요 시)
-                elif name == "generate" or name == "intent_classifier":
-                    output = data.get("output")
-                    if output and isinstance(output, dict):
-                        # 부분 상태 업데이트
-                        # final_state를 덮어쓰기보다 병합이 안전할 수 있으나, 
-                        # LangGraph 노드는 전체 상태를 반환하므로 덮어써도 무방
-                        # 단, 가장 마지막에 실행된 노드의 상태가 최종 상태여야 함.
-                        # final_state 변수를 계속 갱신하면 됨.
-                        final_state = output
+                    # 2. {노드명: State} 형태인 경우 (LangGraph 출력 패턴)
+                    else:
+                        for node_name, node_state in output.items():
+                            if isinstance(node_state, dict) and ("_missing_info" in node_state or "messages" in node_state):
+                                final_state = node_state
+                                # 문서 정보도 여기서 한 번 더 확인 (안전장치)
+                                if "_retrieved_docs" in node_state:
+                                    captured_retrieved_docs = node_state["_retrieved_docs"]
+                                if "_qna_docs" in node_state:
+                                    captured_qna_docs = node_state["_qna_docs"]
+                                break
 
         if final_state is initial_state:
              logger.warning("최종 상태를 캡처하지 못했습니다.")
@@ -311,10 +311,6 @@ async def send_message(
                     "question": _extract_doc_attr(doc, "question", "") or "",
                 })
         
-        # [로깅] 최종 전송할 소스 데이터 확인
-        logger.info(f"📤 전송할 RAG 소스: {len(extracted_rag_sources)}개 - {[s.get('filename') for s in extracted_rag_sources]}")
-        logger.info(f"📤 전송할 QnA 소스: {len(extracted_qna_sources)}개 - {[s.get('filename') for s in extracted_qna_sources]}")
-
         combined_sources = []
         combined_sources.extend(extracted_rag_sources)
         combined_sources.extend(extracted_qna_sources)
@@ -334,8 +330,12 @@ async def send_message(
         db.add(assistant_message)
         
         # 9. 세션 정보 업데이트
+        logger.info(f"세션 정보 업데이트: missing_info={final_state.get('_missing_info')}")
         session.missing_info = final_state.get("_missing_info")
         session.updated_at = datetime.now()
+        
+        # [수정] 세션 변경사항 명시적 반영
+        db.add(session)
 
         if not session.title:
             session.title = question[:50]

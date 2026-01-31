@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from fastapi import HTTPException, status, UploadFile
 from app.models.knowledge import KnowledgeDoc
 from app.core.milvus_schema import get_milvus_collection_safe
-from app.dto.knowledge import BatchDocumentResult, DocumentResponse
+from app.dto.knowledge import BatchDocumentResult
 from app.services.s3_service import upload_to_s3, delete_from_s3, generate_storage_paths
 from app.services.parser_service import get_parser
 from app.worker.tasks import process_document_task
@@ -138,7 +138,6 @@ async def ingest_documents_batch(
         results.append(result)
     
     success_count = sum(1 for r in results if r.success)
-    failure_count = len(results) - success_count
     
     logger.info(f"배치 요청 처리 완료: 총 {len(results)}개, 성공(예약) {success_count}개")
     
