@@ -60,7 +60,12 @@ async def send_message(
     
     return StreamingResponse(
         sse_generator(generator),
-        media_type="text/event-stream"
+        media_type="text/event-stream",
+        headers={
+            "X-Accel-Buffering": "no",  # Nginx 버퍼링 방지
+            "Cache-Control": "no-cache", # 캐시 방지
+            "Connection": "keep-alive"   # 연결 유지
+        }
     )
 
 
