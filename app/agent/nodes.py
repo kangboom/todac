@@ -593,6 +593,10 @@ async def generate_node(state: AgentState) -> AgentState:
                 state["messages"] = [response]
                 state["is_emergency"] = False
                 
+                # [추가] 정보가 부족하여 되묻는 상황이므로, 기존 검색된 문서 정보는 제거하여 출처로 표시되지 않게 함
+                state["_retrieved_docs"] = []
+                state["_qna_docs"] = []
+                
                 return state
                 
             except Exception as e:

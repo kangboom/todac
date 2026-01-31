@@ -232,9 +232,10 @@ async def send_message(
                 output = data.get("output")
                 if output and isinstance(output, dict):
                     # 문서 정보가 있다면 캡처 (덮어쓰기) - 가장 최신의 문서 정보 유지
-                    if "_retrieved_docs" in output and output["_retrieved_docs"]:
+                    # [수정] 키가 존재하면 값이 비어있어도([]) 갱신하여 초기화를 반영
+                    if "_retrieved_docs" in output:
                         captured_retrieved_docs = output["_retrieved_docs"]
-                    if "_qna_docs" in output and output["_qna_docs"]:
+                    if "_qna_docs" in output:
                         captured_qna_docs = output["_qna_docs"]
                 
                 # LangGraph 전체 종료
@@ -275,6 +276,13 @@ async def send_message(
         # [수정] 캡처된 문서 변수 사용 (final_state에 없어도 복구 가능)
         retrieved_docs = captured_retrieved_docs if captured_retrieved_docs else final_state.get("_retrieved_docs", [])
         
+        # [추가] Missing Info 상태라면 문서를 강제로 비움 (안전장치)
+        # nodes.py에서 이미 비웠지만, 캡처된 변수에 남아있을 수 있으므로 확인
+        # generate 노드가 끝났다면 캡처 변수도 비워져 있어야 정상이지만, 혹시 모를 상황 대비
+        # _missing_info가 있거나 의도가 provide_missing_info라면 문서 무시
+        if final_state.get("_missing_info") or final_state.get("_intent") == "provide_missing_info":
+             retrieved_docs = []
+        
         if retrieved_docs:
             for doc in retrieved_docs:
                 extracted_rag_sources.append({
@@ -288,6 +296,10 @@ async def send_message(
         extracted_qna_sources = []
         # [수정] 캡처된 문서 변수 사용
         qna_docs = captured_qna_docs if captured_qna_docs else final_state.get("_qna_docs", [])
+        
+        # [추가] Missing Info 상태라면 문서를 강제로 비움
+        if final_state.get("_missing_info") or final_state.get("_intent") == "provide_missing_info":
+             qna_docs = []
         
         if qna_docs:
             for doc in qna_docs:
