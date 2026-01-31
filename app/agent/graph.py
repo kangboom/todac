@@ -51,7 +51,7 @@ def should_continue(state: AgentState) -> str:
     messages = state.get("messages", [])
     if not messages:
         # 메시지가 없는 예외적인 경우 안전하게 종료
-        return END
+        return "evaluate_node"
     
     last_message = messages[-1]
     
@@ -66,17 +66,8 @@ def should_continue(state: AgentState) -> str:
         logger.info("Tool 호출이 감지되었습니다. Tool 실행으로 진행합니다.")
         return "tools"
 
-    # 2. 문서 유무 확인 (문서가 하나라도 있어야 평가 진행)
-    retrieved_docs = state.get("_retrieved_docs", [])
-    qna_docs = state.get("_qna_docs", [])
-    
-    if retrieved_docs or qna_docs:
-        logger.info("참고할 문서가 존재합니다. 문서 평가(evaluate_node)로 진행합니다.")
-        return "evaluate_node"
+    return "evaluate_node"
 
-    # 3. Tool 호출도 없고 문서도 없으면 종료 (직접 답변)
-    logger.info("Tool 호출과 참고 문서가 없습니다. 직접 답변 후 종료합니다.")
-    return END
         
 
 
@@ -94,7 +85,7 @@ def route_doc_relevance(state: AgentState) -> str:
         logger.info("문서 관련성이 높습니다. 답변 생성으로 진행합니다.")
         return "generate"
     
-    # [수정] 응급 상황 또는 재시도 상황이면 정보가 부족해도(관련성이 낮아도) 일단 답변 시도
+    # [수정] 재시도 상황이면 정보가 부족해도(관련성이 낮아도) 일단 답변 시도
     if is_retry:
         logger.info("🔄 재시도(is_retry) 상황이므로 문서 관련성이 낮아도 강제로 답변을 생성합니다.")
         return "generate"
@@ -155,7 +146,6 @@ def create_agent_graph():
         {
             "tools": "tools",  # ToolNode: Tool 실행 및 ToolMessage 자동 추가
             "evaluate_node": "evaluate_node", # Tool 호출 없으면 평가 단계로
-            END: END # [추가] Tool 호출도 문서도 없으면 종료
         }
     )
     
@@ -172,8 +162,8 @@ def create_agent_graph():
         }
     )
     
-    # 6. analyze_missing_info -> END (사용자에게 되묻고 종료)
-    workflow.add_edge("analyze_missing_info", END)
+    # 6. analyze_missing_info -> generate (사용자에게 되묻는 메시지를 generate에서 생성)
+    workflow.add_edge("analyze_missing_info", "generate")
     
     # 7. generate -> END (바로 종료)
     workflow.add_edge("generate", END)

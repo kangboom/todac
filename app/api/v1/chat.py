@@ -2,9 +2,10 @@
 채팅 관련 API
 """
 from fastapi import APIRouter, Depends, status, HTTPException
+from fastapi.responses import StreamingResponse
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, AsyncGenerator
 import uuid
 from app.core.database import get_db
 from app.api.dependencies import get_current_user
@@ -23,9 +24,14 @@ router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")
 
 
+async def sse_generator(generator: AsyncGenerator[str, None]) -> AsyncGenerator[str, None]:
+    """SSE 포맷으로 변환"""
+    async for chunk in generator:
+        yield f"data: {chunk}\n\n"
+
+
 @router.post(
     "/chat/message",
-    response_model=ChatMessageSendResponse,
     status_code=status.HTTP_200_OK,
     dependencies=[Depends(oauth2_scheme)]
 )
@@ -35,20 +41,26 @@ async def send_message(
     db: Session = Depends(get_db)
 ):
     """
-    메시지 전송 및 AI 응답 받기
+    메시지 전송 및 AI 응답 받기 (SSE 스트리밍)
     
     - **baby_id**: 아기 프로필 ID (필수)
     - **message**: 사용자 메시지 (필수)
     - **session_id**: 세션 ID (선택, 없으면 새로 생성)
     
     세션이 없으면 자동으로 새 세션을 생성하고, 있으면 기존 세션에 메시지를 추가합니다.
+    응답은 Server-Sent Events (SSE) 형식으로 스트리밍됩니다.
     """
-    return await chat_service.send_message(
+    generator = chat_service.send_message(
         db=db,
         user_id=current_user.id,
         baby_id=request.baby_id,
         question=request.message,
         session_id=request.session_id
+    )
+    
+    return StreamingResponse(
+        sse_generator(generator),
+        media_type="text/event-stream"
     )
 
 

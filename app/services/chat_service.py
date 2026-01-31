@@ -10,10 +10,11 @@ from app.agent.state import AgentState
 from app.core.config import settings
 from app.dto.chat import ChatMessageSendResponse, ConversationMessage
 from app.dto.baby import AgeInfo, BabyAgentInfo
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, AsyncGenerator
 import uuid
 import time
 import logging
+import json
 from datetime import date, datetime
 from langchain_core.messages import HumanMessage, AIMessage
 
@@ -107,15 +108,22 @@ def _get_conversation_history(
     ]
 
 
+def _extract_doc_attr(doc: Any, attr: str, default: Any = "") -> Any:
+    """문서 객체 또는 딕셔너리에서 속성 추출"""
+    if isinstance(doc, dict):
+        return doc.get(attr, default)
+    return getattr(doc, attr, default)
+
+
 async def send_message(
     db: Session,
     user_id: uuid.UUID,
     baby_id: uuid.UUID,
     question: str,
     session_id: uuid.UUID = None
-) -> ChatMessageSendResponse:
+) -> AsyncGenerator[str, None]:
     """
-    메시지 전송 및 에이전트 실행
+    메시지 전송 및 에이전트 실행 (스트리밍)
     
     Args:
         db: 데이터베이스 세션
@@ -124,8 +132,8 @@ async def send_message(
         question: 사용자 질문
         session_id: 세션 ID (없으면 새로 생성)
     
-    Returns:
-        응답 정보 DTO
+    Yields:
+        SSE 이벤트 데이터 (JSON 문자열)
     """
     start_time = time.time()
     
@@ -142,10 +150,11 @@ async def send_message(
         ).first()
         
         if not baby:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="아기 프로필을 찾을 수 없습니다."
-            )
+            yield json.dumps({
+                "type": "error",
+                "detail": "아기 프로필을 찾을 수 없습니다."
+            }, ensure_ascii=False)
+            return
         
         # 3. 대화 이력 가져오기
         conversation_history = _get_conversation_history(
@@ -153,10 +162,8 @@ async def send_message(
         )
         
         # 4. AgentState 초기화
-        # DB 히스토리를 LangChain Message 객체로 변환
         history_messages = []
         if conversation_history:
-            # _get_conversation_history가 최신순(오래된 것 -> 최신 것)으로 이미 반환함
             for msg in conversation_history:
                 content = msg.content
                 if msg.role == "user":
@@ -164,45 +171,95 @@ async def send_message(
                 elif msg.role == "assistant":
                     history_messages.append(AIMessage(content=content))
         
-        # 현재 질문 추가
         history_messages.append(HumanMessage(content=question))
 
-        # 세션에서 이전 턴의 missing_info 불러오기
         prev_missing_info = session.missing_info if session.missing_info else None
         
-        # [수정] 이전 턴의 최초 질문이 있다면 복원 (없으면 현재 질문 사용)
         restored_previous_question = question
         if prev_missing_info and isinstance(prev_missing_info, dict):
             restored_previous_question = prev_missing_info.get("pending_question", question)
 
         initial_state: AgentState = {
             "question": question,
-            "previous_question": restored_previous_question,  # [수정] 복원된 질문 적용
+            "previous_question": restored_previous_question,
             "session_id": session.id,
             "user_id": user_id,
             "messages": history_messages,
-            "baby_info": _prepare_baby_info(baby).model_dump(),  # DTO -> Dict 변환
+            "baby_info": _prepare_baby_info(baby).model_dump(),
             "_retrieved_docs": [],
             "_qna_docs": [],
-            # Self-RAG 관련 필드
             "_doc_relevance_score": None,
             "_doc_relevance_passed": False,
-            "_missing_info": prev_missing_info, # [수정] DB에서 복원
-            "is_retry": False, # 기본값 False
+            "_missing_info": prev_missing_info,
+            "is_retry": False,
             "response": "",
             "is_emergency": False,
             "response_time": None,
             "_intent": None
         }
         
-        # 5. 에이전트 그래프 가져오기 및 실행
+        # 5. 에이전트 그래프 가져오기 및 실행 (스트리밍)
         logger.info(f"에이전트 실행 시작: session_id={session.id}, question={question[:50]}...")
-        agent_graph = get_agent_graph()  # 여기서 그래프 인스턴스 생성/가져오기
-        final_state = await agent_graph.ainvoke(initial_state)
+        agent_graph = get_agent_graph()
+        
+        final_state = initial_state
+        accumulated_response = ""
+        
+        # [수정] 문서 정보 유실 방지를 위한 별도 캡처 변수
+        captured_retrieved_docs = []
+        captured_qna_docs = []
+        
+        # [수정] astream_events를 사용하여 토큰 단위 스트리밍 구현
+        async for event in agent_graph.astream_events(initial_state, version="v1"):
+            event_type = event.get("event")
+            name = event.get("name")
+            data = event.get("data", {})
+            tags = event.get("tags", [])
+            
+            # 1) LLM 토큰 스트리밍 (태그 기반 필터링)
+            # nodes.py에서 "stream_response" 태그를 단 호출만 스트리밍
+            if event_type == "on_chat_model_stream" and "stream_response" in tags:
+                chunk_content = data.get("chunk", {}).content
+                if chunk_content:
+                    yield json.dumps({
+                        "type": "chunk",
+                        "content": chunk_content
+                    }, ensure_ascii=False)
+                    accumulated_response += chunk_content
+
+            # 2) 상태 추적 (on_chain_end)
+            if event_type == "on_chain_end":
+                output = data.get("output")
+                if output and isinstance(output, dict):
+                    # 문서 정보가 있다면 캡처 (덮어쓰기) - 가장 최신의 문서 정보 유지
+                    if "_retrieved_docs" in output and output["_retrieved_docs"]:
+                        captured_retrieved_docs = output["_retrieved_docs"]
+                    if "_qna_docs" in output and output["_qna_docs"]:
+                        captured_qna_docs = output["_qna_docs"]
+                
+                # LangGraph 전체 종료
+                if name == "LangGraph":
+                    output = data.get("output")
+                    if output and isinstance(output, dict):
+                        final_state = output
+                # 개별 노드 종료 (필요 시)
+                elif name == "generate" or name == "intent_classifier":
+                    output = data.get("output")
+                    if output and isinstance(output, dict):
+                        # 부분 상태 업데이트
+                        # final_state를 덮어쓰기보다 병합이 안전할 수 있으나, 
+                        # LangGraph 노드는 전체 상태를 반환하므로 덮어써도 무방
+                        # 단, 가장 마지막에 실행된 노드의 상태가 최종 상태여야 함.
+                        # final_state 변수를 계속 갱신하면 됨.
+                        final_state = output
+
+        if final_state is initial_state:
+             logger.warning("최종 상태를 캡처하지 못했습니다.")
+             if accumulated_response:
+                 final_state["response"] = accumulated_response
         
         # 6. 응답 시간 계산
         response_time = time.time() - start_time
-        final_state["response_time"] = response_time
         
         # 7. 사용자 메시지 DB 저장
         user_message = ChatMessage(
@@ -214,74 +271,90 @@ async def send_message(
         db.add(user_message)
         
         # 8. AI 응답 DB 저장
-        # 문서 객체에서 소스 정보 추출
         extracted_rag_sources = []
-        retrieved_docs = final_state.get("_retrieved_docs", [])
-        for doc in retrieved_docs:
-            extracted_rag_sources.append({
-                "doc_id": str(getattr(doc, "doc_id", "")),
-                "chunk_index": getattr(doc, "chunk_index", ""),
-                "score": getattr(doc, "score", 0.0),
-                "filename": getattr(doc, "filename", ""),
-                "category": getattr(doc, "category", "")
-            })
+        # [수정] 캡처된 문서 변수 사용 (final_state에 없어도 복구 가능)
+        retrieved_docs = captured_retrieved_docs if captured_retrieved_docs else final_state.get("_retrieved_docs", [])
+        
+        if retrieved_docs:
+            for doc in retrieved_docs:
+                extracted_rag_sources.append({
+                    "doc_id": str(_extract_doc_attr(doc, "doc_id", "")),
+                    "chunk_index": _extract_doc_attr(doc, "chunk_index", ""),
+                    "score": _extract_doc_attr(doc, "score", 0.0),
+                    "filename": _extract_doc_attr(doc, "filename", ""),
+                    "category": _extract_doc_attr(doc, "category", "")
+                })
             
         extracted_qna_sources = []
-        qna_docs = final_state.get("_qna_docs", [])
-        for doc in qna_docs:
-            extracted_qna_sources.append({
-                "source_type": "qna",
-                "qna_id": str(getattr(doc, "id", "") or ""),
-                "filename": getattr(doc, "source", "") or "",
-                "category": getattr(doc, "category", "") or "",
-                "question": getattr(doc, "question", "") or "",
-            })
-            
-        # DB에는 rag_sources 컬럼 하나뿐이므로 합쳐서 저장 (데이터 유실 방지)
+        # [수정] 캡처된 문서 변수 사용
+        qna_docs = captured_qna_docs if captured_qna_docs else final_state.get("_qna_docs", [])
+        
+        if qna_docs:
+            for doc in qna_docs:
+                extracted_qna_sources.append({
+                    "source_type": "qna",
+                    "qna_id": str(_extract_doc_attr(doc, "id", "") or ""),
+                    "filename": _extract_doc_attr(doc, "source", "") or "",
+                    "category": _extract_doc_attr(doc, "category", "") or "",
+                    "question": _extract_doc_attr(doc, "question", "") or "",
+                })
+        
+        # [로깅] 최종 전송할 소스 데이터 확인
+        logger.info(f"📤 전송할 RAG 소스: {len(extracted_rag_sources)}개 - {[s.get('filename') for s in extracted_rag_sources]}")
+        logger.info(f"📤 전송할 QnA 소스: {len(extracted_qna_sources)}개 - {[s.get('filename') for s in extracted_qna_sources]}")
+
         combined_sources = []
         combined_sources.extend(extracted_rag_sources)
         combined_sources.extend(extracted_qna_sources)
-
+        
+        final_response_text = final_state.get("response", "")
+        # 만약 스트리밍된 내용이 있는데 state에 반영 안되었다면 동기화
+        if not final_response_text and accumulated_response:
+            final_response_text = accumulated_response
+            
         assistant_message = ChatMessage(
             session_id=session.id,
             role=MessageRole.ASSISTANT.value,
-            content=final_state.get("response", ""),
+            content=final_response_text,
             is_emergency=final_state.get("is_emergency", False),
             rag_sources=combined_sources if combined_sources else None
         )
         db.add(assistant_message)
         
         # 9. 세션 정보 업데이트
-        # 다음 턴을 위해 missing_info 저장 (없으면 None)
         session.missing_info = final_state.get("_missing_info")
-        session.updated_at = datetime.now() # updated_at 갱신
+        session.updated_at = datetime.now()
 
-        # 세션 제목 업데이트 (첫 메시지인 경우)
         if not session.title:
-            session.title = question[:50]  # 첫 50자
+            session.title = question[:50]
         
         db.commit()
         
-        logger.info(f"에이전트 실행 완료: response_time={response_time:.2f}s, is_emergency={final_state.get('is_emergency')}")
+        logger.info(f"에이전트 실행 완료: response_time={response_time:.2f}s")
         
-        return ChatMessageSendResponse(
-            response=final_state.get("response", ""),
-            session_id=str(session.id),
-            is_emergency=final_state.get("is_emergency", False),
-            rag_sources=extracted_rag_sources,
-            qna_sources=extracted_qna_sources,
-            response_time=response_time
-        )
+        # 완료 이벤트 전송
+        yield json.dumps({
+            "type": "done",
+            "response": final_response_text,
+            "session_id": str(session.id),
+            "is_emergency": final_state.get("is_emergency", False),
+            "rag_sources": extracted_rag_sources,
+            "qna_sources": extracted_qna_sources,
+            "response_time": response_time
+        }, ensure_ascii=False)
         
-    except HTTPException:
-        raise
+    except HTTPException as he:
+        yield json.dumps({
+            "type": "error",
+            "detail": he.detail
+        }, ensure_ascii=False)
     except Exception as e:
         logger.error(f"에이전트 실행 실패: {str(e)}", exc_info=True)
         db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"메시지 처리 중 오류가 발생했습니다: {str(e)}"
-        )
+        yield json.dumps({
+            "type": "error",
+            "detail": f"메시지 처리 중 오류가 발생했습니다: {str(e)}"
+        }, ensure_ascii=False)
 
 
 def get_sessions(db: Session, user_id: uuid.UUID, baby_id: uuid.UUID = None) -> List[ChatSession]:

@@ -14,7 +14,8 @@ from app.agent.prompts import (
     SIMPLE_RESPONSE_PROMPT_TEMPLATE,
     INTENT_CLASSIFICATION_PROMPT_TEMPLATE,
     ANALYZE_MISSING_INFO_PROMPT_TEMPLATE,
-    CREATE_QUERY_FROM_INFO_PROMPT_TEMPLATE # [추가]
+    CREATE_QUERY_FROM_INFO_PROMPT_TEMPLATE,
+    ASK_FOR_INFO_PROMPT_TEMPLATE # [추가]
 )
 from app.agent.tools import milvus_knowledge_search, report_emergency, retrieve_qna
 from app.services.qna_service import format_qna_docs
@@ -138,7 +139,11 @@ async def intent_classifier_node(state: AgentState) -> AgentState:
                 # agent_chat_model을 사용하여 자연스러운 답변 생성
                 if agent_chat_model:
                     # [Async] invoke -> ainvoke
-                    resp = await agent_chat_model.ainvoke([HumanMessage(content=simple_prompt)])
+                    # [수정] 스트리밍을 위한 태그 추가
+                    resp = await agent_chat_model.ainvoke(
+                        [HumanMessage(content=simple_prompt)],
+                        config={"tags": ["stream_response"]}
+                    )
                     state["response"] = resp.content.strip()
                     state["messages"] = [resp]
                 else:
@@ -311,6 +316,7 @@ async def agent_node(state: AgentState) -> AgentState:
         
         # Agent 실행
         # [Async] invoke -> ainvoke
+        # Tool 호출은 JSON 출력이므로 스트리밍 태그 없음
         response = await model_with_tools.ainvoke(messages_with_system)
         
         # 툴 호출 확인하여 is_emergency 플래그 설정 (현재 턴의 호출 확인)
@@ -336,13 +342,6 @@ async def agent_node(state: AgentState) -> AgentState:
             
             tool_calls_count = len(tool_calls)
             logger.info(f"Tool 호출 결정: {tool_calls_count}개 tool 호출")
-            
-        else:
-            # Tool 호출이 없으면 직접 답변 (AIMessage content 사용)
-            # 하지만 여기서 답변을 확정하지 않고, evaluate_node로 넘길 수도 있음
-            # 일단 response에 담아둠
-            state["response"] = str(response.content).strip()
-            logger.info("도구 없이 직접 응답 생성")
 
         # 응답을 메시지에 추가
         state["messages"] = [response]
@@ -455,14 +454,32 @@ async def evaluate_node(state: AgentState) -> AgentState:
         logger.info(f"관련성 필터링 (RAG): {len(retrieved_docs)} -> {len(filtered_rag)}")
         logger.info(f"관련성 필터링 (QnA): {len(qna_docs)} -> {len(filtered_qna)}")
         
-        state["_retrieved_docs"] = filtered_rag
-        state["_qna_docs"] = filtered_qna # 필터링된 QnA로 교체
-        
-        # 필터링된 문서가 없으면 점수가 높아도 실패 처리
+        # [수정] 필터링된 문서가 하나도 없으면 원본 유지 (Fallback)
         if not filtered_rag and not filtered_qna:
-            logger.warning("관련 문서가 하나도 없어 평가를 실패 처리합니다.")
-            state["_doc_relevance_passed"] = False
-            state["_doc_relevance_score"] = 0.0
+            logger.warning("관련 문서가 하나도 없어 필터링을 취소하고 원본 문서를 유지합니다. (Fallback)")
+            # 원본 유지하되, 통과 여부는 False로 두어 analyze_missing_info로 유도할지 결정
+            # 하지만 사용자는 출처 보기를 원하므로 문서는 살려둠
+            state["_retrieved_docs"] = retrieved_docs
+            state["_qna_docs"] = qna_docs
+            
+            # 문서는 살렸지만, 점수는 낮으므로 흐름 제어 변수는 유지
+            # 단, is_retry가 아니면 analyze_missing_info로 가야 하는데,
+            # 그러면 generate를 안 거쳐서 출처가 안 나올 수 있음 (기존 흐름)
+            # -> 이제 흐름이 analyze -> generate 이므로 괜찮음.
+            
+            # 만약 점수가 너무 낮아서 0점이라면?
+            # 일단 문서는 state에 남겨둠.
+        else:
+            state["_retrieved_docs"] = filtered_rag
+            state["_qna_docs"] = filtered_qna # 필터링된 QnA로 교체
+        
+        # 필터링된 문서가 없으면 점수가 높아도 실패 처리 (위에서 Fallback 했으면 이 로직은 무시됨)
+        # 하지만 위에서 복구했으므로 이 로직은 사실상 의미가 약해짐.
+        # 정확한 평가를 위해 score 로직은 유지.
+        if not filtered_rag and not filtered_qna:
+             # Fallback을 했더라도 '평가상'으로는 실패임
+             state["_doc_relevance_passed"] = False
+
         
         # (출처 업데이트 로직 제거 - Service에서 처리)
         
@@ -477,7 +494,7 @@ async def evaluate_node(state: AgentState) -> AgentState:
 async def analyze_missing_info_node(state: AgentState) -> AgentState:
     """
     Analyze Missing Info Node
-    문서가 불충분할 때 사용자에게 필요한 정보를 되묻는 응답 생성
+    문서가 불충분할 때 사용자에게 필요한 정보와 그 이유를 분석 (답변 생성 X)
     """
     logger.info("--- [NODE] Analyze Missing Info Start ---")
     question = state.get("previous_question") or state.get("question", "")
@@ -496,35 +513,35 @@ async def analyze_missing_info_node(state: AgentState) -> AgentState:
     
     try:
         # [Async] invoke -> ainvoke
+        # JSON 분석 모드 (스트리밍 X)
         response = await agent_chat_model.ainvoke([HumanMessage(content=prompt)])
         response_text = response.content.strip()
         
         # JSON 파싱
         result = _parse_json_from_response(response_text)
         
-        # 1. 사용자 응답 메시지 추출
-        generated_response = result.get("response", "죄송합니다. 정확한 답변을 위해 추가 정보가 필요합니다.")
-        
-        # 2. 누락 정보 리스트 추출
+        # 누락 정보 및 이유 추출
         missing_info_list = result.get("missing_info", [])
+        reason = result.get("reason", "")
         
-        logger.info(f"부족한 정보 요청 응답 생성 완료")
-        logger.info(f"누락 정보 목록: {missing_info_list}")
+        logger.info(f"부족한 정보 분석 완료")
+        logger.info(f"누락 정보: {missing_info_list}, 이유: {reason}")
         
-        # 응답 설정 (순수 텍스트만)
-        state["response"] = generated_response
-        state["messages"] = [AIMessage(content=generated_response)]
-        
-        # missing_info 필드에 딕셔너리로 저장 (원래 질문 보존)
+        # missing_info 필드에 저장
         state["_missing_info"] = {
             "missing_info": missing_info_list,
+            "reason": reason, # [추가] 이유 저장
             "pending_question": question
         }
         
+        # 응답 텍스트(response)는 생성하지 않음. Generate Node에서 처리.
+        
     except Exception as e:
         logger.error(f"부족한 정보 분석 실패: {e}")
-        state["response"] = "죄송합니다. 요청하신 내용을 파악하기 위해 더 자세한 정보가 필요합니다."
-        state["_missing_info"] = None # 오류 발생 시 초기화
+        # 오류 시 기본 응답 설정이 아니라, 다음 단계에서 처리하도록 비워둘 수도 있으나,
+        # 안전하게 에러 메시지 설정
+        state["_missing_info"] = None
+        state["response"] = "죄송합니다. 분석 중 오류가 발생했습니다."
         
     return state
 
@@ -532,11 +549,58 @@ async def analyze_missing_info_node(state: AgentState) -> AgentState:
 async def generate_node(state: AgentState) -> AgentState:
     """
     Generate Node (Self-RAG)
-    검색된 문서를 바탕으로 최종 답변 생성 (Strategy B 제거 -> 통합 로직)
+    검색된 문서를 바탕으로 최종 답변 생성 또는 부족한 정보 요청
     """
     logger.info("--- [NODE] Generate Answer Start ---")
     previous_question = state.get("previous_question") or state.get("question", "")
     baby_info = state.get("baby_info", {})
+    
+    missing_info_data = state.get("_missing_info")
+    
+    # 1. 정보 부족 시 질문 생성 모드
+    if missing_info_data and isinstance(missing_info_data, dict):
+        logger.info("📝 Missing Info Question Generation Mode")
+        
+        missing_info_list = missing_info_data.get("missing_info", [])
+        reason = missing_info_data.get("reason", "")
+        
+        if not missing_info_list:
+            # 리스트가 비었다면 그냥 일반 답변 모드로 진행 (혹은 에러 처리)
+            logger.warning("missing_info 리스트가 비어있어 일반 답변 모드로 전환")
+            missing_info_data = None
+        else:
+            baby_context = get_baby_context_string(baby_info)
+            missing_info_str = ", ".join(missing_info_list)
+            
+            prompt = ASK_FOR_INFO_PROMPT_TEMPLATE.format(
+                baby_context=baby_context,
+                question=previous_question,
+                missing_info=missing_info_str,
+                reason=reason
+            )
+            
+            try:
+                # [Async] invoke -> ainvoke
+                # [수정] 스트리밍 태그 추가
+                logger.info(f"====스트리밍 응답 시작====")
+                response = await agent_chat_model.ainvoke(
+                    [SystemMessage(content=prompt)],
+                    config={"tags": ["stream_response"]}
+                )
+                logger.info(f"====스트리밍 응답 완료====")
+                generated_response = response.content.strip()
+                state["response"] = generated_response
+                state["messages"] = [response]
+                state["is_emergency"] = False
+                
+                return state
+                
+            except Exception as e:
+                logger.error(f"질문 생성 실패: {str(e)}", exc_info=True)
+                state["response"] = "죄송합니다. 질문 생성 중 오류가 발생했습니다."
+                return state
+
+    # 2. 일반 답변 생성 모드
     
     # evaluate_node에서 필터링된 문서들 가져오기
     retrieved_docs = state.get("_retrieved_docs", [])
@@ -574,8 +638,6 @@ async def generate_node(state: AgentState) -> AgentState:
                 previous_question=previous_question
             )
         else:
-            # 통합된 일반 생성 로직 (Green/Yellow/Red 구분 없음)
-            logger.info("📝 Standard Generation Mode")
             
             docs_context = ""
             
@@ -620,11 +682,16 @@ async def generate_node(state: AgentState) -> AgentState:
 
         # 답변 생성
         # [Async] invoke -> ainvoke
-        response = await agent_chat_model.ainvoke([
-            SystemMessage(content=prompt),
-            HumanMessage(content=previous_question)
-        ])
-        
+        # [수정] 스트리밍을 위한 태그 추가
+        logger.info(f"====스트리밍 응답 시작====")
+        response = await agent_chat_model.ainvoke(
+            [
+                SystemMessage(content=prompt),
+                HumanMessage(content=previous_question)
+            ],
+            config={"tags": ["stream_response"]}
+        )
+        logger.info(f"====스트리밍 응답 완료====")
         generated_response = response.content.strip()
         state["response"] = generated_response
         state["is_emergency"] = False
