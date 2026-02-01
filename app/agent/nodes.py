@@ -102,7 +102,7 @@ async def create_query_from_info_node(state: AgentState) -> AgentState:
     Create Query From Info Node
     부족했던 정보가 제공되면, 이를 원본 질문과 결합하여 새로운 검색 질문을 생성
     """
-    logger.info("--- 🤖 질문 재구성 노드 실행행 ---")
+    logger.info("--- 🤖 질문 재구성 노드 실행 ---")
     
     # missing_info 데이터 구조 처리 (타입 안전하게 처리)
     missing_info_data = state.get("_missing_info") or {}
@@ -113,8 +113,8 @@ async def create_query_from_info_node(state: AgentState) -> AgentState:
     previous_question = saved_previous_question if saved_previous_question else state.get("previous_question", "")
     
     logger.info(f"이전 질문: {previous_question}")
-    user_response = state.get("question", "") # 현재 턴의 사용자 입력(정보 제공)
-    
+    question = state.get("question", "") # 현재 턴의 사용자 입력(정보 제공)
+    logger.info(f"현재 질문: {question}")
     llm = get_generator_llm()
     if not llm:
         return state
@@ -124,11 +124,10 @@ async def create_query_from_info_node(state: AgentState) -> AgentState:
     prompt = CREATE_QUERY_FROM_INFO_PROMPT_TEMPLATE.format(
         previous_question=previous_question,
         missing_info=missing_info_text,
-        user_response=user_response
+        question=question
     )
     
     try:
-        # [Async] invoke -> ainvoke
         response = await llm.ainvoke([HumanMessage(content=prompt)])
         new_query = response.content.strip()
         
@@ -146,7 +145,7 @@ async def create_query_from_info_node(state: AgentState) -> AgentState:
     except Exception as e:
         logger.error(f"질문 생성 실패: {e}")
         # 실패 시 원본 질문과 사용자 입력을 단순 결합
-        state["question"] = f"{previous_question} {user_response}"
+        state["question"] = f"{previous_question} {question}"
         
     return state
 
@@ -270,7 +269,7 @@ async def evaluate_node(state: AgentState) -> AgentState:
     qna_docs = state.get("_qna_docs", []) or []
 
     if not retrieved_docs and not qna_docs:
-        logger.warning(f"⚠️ 평가할 문서가 없습니다 (RAG 및 QnA 모두 없음).")
+        logger.warning("⚠️ 평가할 문서가 없습니다 (RAG 및 QnA 모두 없음).")
         state["_doc_relevance_score"] = 0.0
         state["_doc_relevance_passed"] = False
         return state
@@ -524,7 +523,6 @@ async def generate_node(state: AgentState) -> AgentState:
 
         generated_response = response.content.strip()
         state["response"] = generated_response
-        state["is_emergency"] = False
         
         # [추가] 답변이 생성되었으므로, 부족한 정보 요청 상태 초기화
         state["_missing_info"] = None 
