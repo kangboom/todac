@@ -36,6 +36,5 @@ class AgentState(TypedDict):
     
     # 4. 출력 및 응답
     response: str # 최종 답변 텍스트
-    is_emergency: bool # 응급 상황 여부 (API 응답 포함)
     
     response_time: Optional[float] # 답변 생성 시간 (초)

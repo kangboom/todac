@@ -99,7 +99,6 @@ def milvus_knowledge_search(
     - 예방접종, 일상 관리, 주의사항에 대한 질문
     - 특정 증상이나 상황에 대한 정보가 필요할 때
     - "무엇을 해야 하나요?", "어떻게 해야 하나요?", "왜 그런가요?" 같은 질문
-    - 응급 상황이여도 의학 정보 검색을 통해 정보를 제공할 수 있습니다.
     
     구체적인 사용 예시:
     - "지속적으로 무호흡과 서맥이 발생하거나 증상이 심해지는 경우는 어떻게 하면 좋아?"
@@ -174,11 +173,9 @@ def milvus_knowledge_search(
                 }
                 retrieved_docs.append(doc)
                 logger.info(
-                    f"  [{idx+1}] doc_id={doc['doc_id']}, "
+                    f"  [{idx+1}] "
                     f"chunk_index={doc['chunk_index']}, "
-                    f"score={doc['score']:.4f}, "
                     f"filename={doc['filename']}, "
-                    f"category={doc['category']}, "
                     f"content_length={len(doc['content'])}"
                 )
         
@@ -193,15 +190,3 @@ def milvus_knowledge_search(
         return []
 
 
-@tool
-def report_emergency(reason: str) -> str:
-    """
-    [주의] 이 도구는 단지 관리자에게 응급 알림을 보내는 '기록용' 도구일 뿐입니다.
-    사용자에게 의학적 조언이나 대처법을 제공하지 않습니다.
-    
-    따라서, 이 도구를 호출한 후에는 반드시 'milvus_knowledge_search'를 함께 호출하여
-    사용자에게 실질적인 대처 방법을 안내해야 합니다.
-    Args:
-        reason: 응급 상황으로 판단한 이유
-    """
-    return "응급 상황이 접수되었습니다."

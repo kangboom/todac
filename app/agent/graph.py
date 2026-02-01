@@ -13,7 +13,7 @@ from app.agent.nodes import (
     generate_node,
     intent_classifier_node, 
 )
-from app.agent.tools import milvus_knowledge_search, report_emergency, retrieve_qna
+from app.agent.tools import milvus_knowledge_search, retrieve_qna
 from app.core.config import settings
 import logging
 
@@ -76,7 +76,6 @@ def route_doc_relevance(state: AgentState) -> str:
     문서 관련성 평가 결과에 따른 라우팅
     - 관련성 높음: "generate" (답변 생성)
     - 관련성 낮음: "analyze_missing_info" (부족한 정보 분석 및 요청)
-      - 단, 응급 상황인 경우 강제로 "generate"로 이동
     """
     relevance_passed = state.get("_doc_relevance_passed", False)
     is_retry = state.get("is_retry", False)
@@ -101,8 +100,7 @@ def create_agent_graph():
     # Tool 정의 (모든 tool을 LLM에 제공)
     tools = [
         milvus_knowledge_search,  # RAG 검색 tool
-        report_emergency,         # 응급 상태 보고 tool
-        retrieve_qna,             # [추가] QnA 검색 tool
+        retrieve_qna,             # QnA 검색 tool
     ]
     
     # StateGraph 생성

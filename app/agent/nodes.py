@@ -9,14 +9,13 @@ from app.agent.prompts import (
     AGENT_NODE_PROMPT_TEMPLATE,
     get_baby_context_string,
     get_docs_context_string,
-    EMERGENCY_PROMPT_TEMPLATE, 
     SIMPLE_RESPONSE_PROMPT_TEMPLATE,
     INTENT_CLASSIFICATION_PROMPT_TEMPLATE,
     ANALYZE_MISSING_INFO_PROMPT_TEMPLATE,
     CREATE_QUERY_FROM_INFO_PROMPT_TEMPLATE,
     ASK_FOR_INFO_PROMPT_TEMPLATE # [추가]
 )
-from app.agent.tools import milvus_knowledge_search, report_emergency, retrieve_qna
+from app.agent.tools import milvus_knowledge_search, retrieve_qna
 from app.services.qna_service import format_qna_docs
 from app.dto.qna import QnADoc
 from app.dto.rag import RagDoc
@@ -199,10 +198,6 @@ async def agent_node(state: AgentState) -> AgentState:
                         except Exception as e:
                             logger.error(f"QnADoc 변환 실패: {e}")
 
-            elif tool_name == "report_emergency":
-                logger.info("  -> 응급 상황 보고 확인")
-                state["is_emergency"] = True
-
     # State 업데이트
     if new_retrieved_docs:
         state["_retrieved_docs"] = new_retrieved_docs
@@ -226,7 +221,6 @@ async def agent_node(state: AgentState) -> AgentState:
         # bind_tools 사용하여 툴 바인딩
         tools = [
             milvus_knowledge_search,  # RAG 검색 tool
-            report_emergency,         # 응급 상태 보고 tool
             retrieve_qna,             # QnA 검색 tool
         ]
         model_with_tools = llm.bind_tools(tools)
@@ -245,14 +239,13 @@ async def agent_node(state: AgentState) -> AgentState:
         
         # Agent 실행
         response = await model_with_tools.ainvoke(messages_with_system)
-
+        logger.info(f"에이전트 실행 결과: {response}")
         # 응답을 메시지에 추가
         state["messages"] = [response]
         
     except Exception as e:
         logger.error(f"에이전트 실행 실패: {str(e)}", exc_info=True)
         state["response"] = "죄송합니다. 답변 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
-        state["is_emergency"] = False
     
     return state
 
@@ -460,7 +453,6 @@ async def generate_node(state: AgentState) -> AgentState:
                 generated_response = response.content.strip()
                 state["response"] = generated_response
                 state["messages"] = [response]
-                state["is_emergency"] = False
                 state["_retrieved_docs"] = []
                 state["_qna_docs"] = []
                 
@@ -497,21 +489,10 @@ async def generate_node(state: AgentState) -> AgentState:
         if not docs_context:
             docs_context = "관련된 참조 문서가 없습니다. 당신의 전문 지식으로 답변해주세요."
         
-        # 응급/일반 모드에 따라 프롬프트 선택
-        prompt = ""
-        
-        if state.get("is_emergency"):
-            logger.info("🚨 Emergency Mode: 응급 프롬프트 적용")
-            prompt = EMERGENCY_PROMPT_TEMPLATE.format(
-                baby_context=baby_context,
-                full_context=docs_context,
-                previous_question=question
-            )
-        else:
-            prompt = RESPONSE_GENERATION_PROMPT_TEMPLATE.format(
-                baby_context=baby_context,
-                docs_context=docs_context
-            )
+        prompt = RESPONSE_GENERATION_PROMPT_TEMPLATE.format(
+            baby_context=baby_context,
+            docs_context=docs_context
+        )
         
         response = await llm.ainvoke(
             [
@@ -533,7 +514,6 @@ async def generate_node(state: AgentState) -> AgentState:
     except Exception as e:
         logger.error(f"답변 생성 실패: {str(e)}", exc_info=True)
         state["response"] = "죄송합니다. 답변 생성 중 오류가 발생했습니다."
-        state["is_emergency"] = False
         state["_missing_info"] = None
     
     return state
