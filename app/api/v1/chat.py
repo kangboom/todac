@@ -18,6 +18,7 @@ from app.dto.chat import (
     ChatMessageResponse
 )
 from app.services import chat_service
+from app.services import chat_repository
 from app.models.chat import ChatSession, ChatMessage
 
 router = APIRouter()
@@ -80,7 +81,7 @@ async def get_sessions(
     db: Session = Depends(get_db)
 ):
     """내 채팅 세션 목록 조회 (baby_id로 필터링 가능)"""
-    sessions = chat_service.get_sessions(db, current_user.id, baby_id)
+    sessions = chat_repository.get_sessions(db, current_user.id, baby_id)
     
     # 메시지 개수 추가
     return [
@@ -130,7 +131,7 @@ async def get_session_detail(
         )
     
     # 메시지 조회
-    messages = chat_service.get_session_messages(db, session_uuid, current_user.id)
+    messages = chat_repository.get_session_messages(db, session_uuid, current_user.id)
     
     # 응답 생성
     message_responses = [
@@ -178,5 +179,5 @@ async def delete_session(
             detail="유효하지 않은 세션 ID입니다."
         )
     
-    chat_service.delete_session(db, session_uuid, current_user.id)
+    chat_repository.delete_session(db, session_uuid, current_user.id)
     return None

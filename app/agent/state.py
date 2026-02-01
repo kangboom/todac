@@ -25,7 +25,7 @@ class AgentState(TypedDict):
     _intent: Optional[str] # 의도 분류 결과 ('relevant' | 'irrelevant')
     
     # 검색된 문서 (평가 전/후)
-    _retrieved_docs: List[RagDoc]  # RAG 검색된 문서 리스트 (DTO 사용)
+    _retrieved_docs: Optional[List[RagDoc]] # RAG 검색된 문서 리스트 (DTO 사용)
     _qna_docs: Optional[List[QnADoc]] # QnA 검색된 문서 리스트 (DTO 사용)
     
     # Self-RAG 평가 관련
