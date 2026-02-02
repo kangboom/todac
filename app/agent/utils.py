@@ -4,6 +4,8 @@ ToolMessage 및 LLM 응답 파싱
 """
 import json
 import logging
+from typing import List
+from langchain_core.messages import BaseMessage
 
 logger = logging.getLogger(__name__)
 
@@ -56,3 +58,29 @@ def parse_json_from_response(text: str) -> dict:
     except Exception as e:
         logger.error(f"JSON 추출 중 오류: {str(e)}")
         return {}
+
+
+def log_message_history(messages: List[BaseMessage], max_content_length: int = 100, context: str = ""):
+    """
+    메시지 히스토리를 요약하여 로깅
+    
+    Args:
+        messages: 로깅할 메시지 리스트
+        max_content_length: 각 메시지 내용의 최대 표시 길이 (기본값: 100)
+        context: 로그에 추가할 컨텍스트 문자열 (예: "generate_node", "intent_classifier")
+    """
+    if not messages:
+        context_str = f" [{context}]" if context else ""
+        logger.info(f"📜 히스토리 없음 (첫 대화){context_str}")
+        return
+    
+    history_summary = []
+    for i, msg in enumerate(messages):
+        msg_type = type(msg).__name__
+        content = getattr(msg, 'content', '')
+        if len(content) > max_content_length:
+            content = content[:max_content_length] + "..."
+        history_summary.append(f"[{i+1}] {msg_type}: {content}")
+    
+    context_str = f" [{context}]" if context else ""
+    logger.info(f"📜 최근 히스토리 ({len(messages)}개){context_str}:\n" + "\n".join(history_summary))

@@ -8,10 +8,9 @@ from app.agent.state import AgentState
 from app.agent.nodes import (
     agent_node,
     evaluate_node,
-    analyze_missing_info_node,
-    create_query_from_info_node, 
     generate_node,
-    intent_classifier_node, 
+    intent_classifier_node,
+    emergency_response_node, # [추가]
 )
 from app.agent.tools import milvus_knowledge_search, retrieve_qna
 from app.core.config import settings
@@ -29,6 +28,10 @@ def route_intent(state: AgentState) -> str:
     """
     intent = state.get("_intent", "relevant")
     
+    if intent == "emergency":
+        logger.info("🚨 응급 상황 감지 -> Emergency Fast-Track 진입")
+        return "emergency_response"
+
     if intent == "irrelevant":
         logger.info("🚫 질문이 아기 돌봄과 관련이 없습니다 -> 단순 응답 후 종료")
         return END
@@ -111,12 +114,13 @@ def create_agent_graph():
     
     # 노드 추가
     workflow.add_node("intent_classifier", intent_classifier_node) # 의도분석
-    workflow.add_node("create_query_from_info", create_query_from_info_node) # [추가] 정보 기반 질문 생성
     workflow.add_node("agent", agent_node)  # 질문 분석/도구 호출 결정
     workflow.add_node("tools", tool_node)  # ToolNode: Vector DB 검색
     workflow.add_node("evaluate_node", evaluate_node)  # 검색 결과 관련성 평가
-    workflow.add_node("analyze_missing_info", analyze_missing_info_node)  # [변경] 부족한 정보 분석
     workflow.add_node("generate", generate_node)  # 답변 생성
+    
+    # [추가] 응급 상황 노드
+    workflow.add_node("emergency_response", emergency_response_node)
 
     # 엣지 연결
     
@@ -129,13 +133,13 @@ def create_agent_graph():
         route_intent,
         {
             "agent": "agent",   # 관련 있음 -> 기존 플로우 진입
-            "create_query_from_info": "create_query_from_info", # 정보 제공 -> 질문 재생성
+            "emergency_response": "emergency_response", # 응급 상황 -> 패스트트랙
             END: END # 관련 없음 -> 종료 (이미 응답 생성됨)
         }
     )
     
-    # 1.5 create_query_from_info -> agent (질문 재생성 후 검색 수행)
-    workflow.add_edge("create_query_from_info", "agent")
+    # [추가] 응급 상황 플로우 연결
+    workflow.add_edge("emergency_response", END)
     
     # 2. Agent -> Tools 결정 (QnA 노드 분기 삭제됨)
     workflow.add_conditional_edges(
@@ -151,17 +155,7 @@ def create_agent_graph():
     workflow.add_edge("tools", "agent")
     
     # 5. evaluate_node -> generate (관련성 높음) 또는 analyze_missing_info (관련성 낮음)
-    workflow.add_conditional_edges(
-        "evaluate_node",
-        route_doc_relevance,
-        {
-            "generate": "generate",  # 답변 생성
-            "analyze_missing_info": "analyze_missing_info"  # 질문 재구성
-        }
-    )
-    
-    # 6. analyze_missing_info -> generate (사용자에게 되묻는 메시지를 generate에서 생성)
-    workflow.add_edge("analyze_missing_info", "generate")
+    workflow.add_edge("evaluate_node", "generate")
     
     # 7. generate -> END (바로 종료)
     workflow.add_edge("generate", END)

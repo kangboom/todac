@@ -11,34 +11,67 @@ from app.agent.prompts import (
     get_docs_context_string,
     SIMPLE_RESPONSE_PROMPT_TEMPLATE,
     INTENT_CLASSIFICATION_PROMPT_TEMPLATE,
-    ANALYZE_MISSING_INFO_PROMPT_TEMPLATE,
-    CREATE_QUERY_FROM_INFO_PROMPT_TEMPLATE,
-    ASK_FOR_INFO_PROMPT_TEMPLATE # [추가]
+    ASK_FOR_INFO_PROMPT_TEMPLATE,
+    EMERGENCY_RESPONSE_PROMPT_TEMPLATE
 )
 from app.agent.tools import milvus_knowledge_search, retrieve_qna
 from app.services.qna_service import format_qna_docs
 from app.dto.qna import QnADoc
 from app.dto.rag import RagDoc
 from app.core.llm_factory import get_generator_llm, get_evaluator_llm
-from app.agent.utils import parse_tool_result, parse_json_from_response
+from app.agent.utils import parse_tool_result, parse_json_from_response, log_message_history
 import logging
+import time
+from functools import wraps
+from typing import Callable, Awaitable, TypeVar
 
 logger = logging.getLogger(__name__)
 
+T = TypeVar('T', bound=AgentState)
 
+
+def track_node_execution_time(node_name: str):
+    """
+    노드 실행 시간을 추적하는 데코레이터
+    
+    Args:
+        node_name: 노드 이름 (로깅용)
+    
+    Usage:
+        @track_node_execution_time("intent_classifier")
+        async def intent_classifier_node(state: AgentState) -> AgentState:
+            ...
+    """
+    def decorator(func: Callable[[AgentState], Awaitable[AgentState]]):
+        @wraps(func)
+        async def wrapper(state: AgentState) -> AgentState:
+            start_time = time.time()
+            try:
+                result = await func(state)
+                elapsed_time = time.time() - start_time
+                logger.info(f"====== ⏱️ [{node_name}] 실행 시간: {elapsed_time:.3f}초 ({elapsed_time*1000:.2f}ms) ⏱️ =======")
+                return result
+            except Exception as e:
+                elapsed_time = time.time() - start_time
+                logger.error(f"====== ⏱️ [{node_name}] 실행 시간: {elapsed_time:.3f}초 (에러 발생: {str(e)}) ⏱️ =======")
+                raise
+        return wrapper
+    return decorator
+
+
+@track_node_execution_time("intent_classifier")
 async def intent_classifier_node(state: AgentState) -> AgentState:
     """
     의도 분류 노드
     질문이 '미숙아 돌봄' 범위인지 판단 + '부족한 정보 제공' 여부 판단
     """
-    logger.info("--- 🤖 의도 분류 노드 실행 ---")
+    logger.info("===== 🤖 의도 분류 노드 실행 =====")
     
     # missing_info 있으면 provide_missing_info로 설정
     missing_info_data = state.get("_missing_info")
     missing_info = missing_info_data.get("missing_info", []) if missing_info_data else []
         
     if missing_info:
-        logger.info(f"✅ 부족한 정보 요청 상태(missing_info 존재) -> 강제로 provide_missing_info로 설정")
         state["_intent"] = "provide_missing_info"
         return state
     
@@ -52,12 +85,12 @@ async def intent_classifier_node(state: AgentState) -> AgentState:
         return state
         
     try:
-        prompt = INTENT_CLASSIFICATION_PROMPT_TEMPLATE.format(
-            question=question
-        )
-        messages = [HumanMessage(content=prompt)]
+
+        messages = state.get("messages", [])
+        recent_history = messages[-5:] if len(messages) > 5 else messages
+        input_messages = [SystemMessage(content=INTENT_CLASSIFICATION_PROMPT_TEMPLATE)] + recent_history
         
-        response = await llm.ainvoke(messages)
+        response = await llm.ainvoke(input_messages)
         response_text = response.content.strip()
         
         result = parse_json_from_response(response_text)
@@ -65,12 +98,12 @@ async def intent_classifier_node(state: AgentState) -> AgentState:
         intent = result.get("intent", "relevant")
         reason = result.get("reason", "")
         
-        logger.info(f"의도 분류 결과: {intent} (이유: {reason})")
+        logger.info(f"✅ 의도 분류 결과: {intent} (이유: {reason}) ✅")
         state["_intent"] = intent
         
         # irrelevant인 경우 즉시 답변 생성
         if intent == "irrelevant":
-            logger.info("🚫 관련 없는 질문 -> 즉시 거절 응답 생성")
+            logger.info("🚫 관련 없는 질문 -> 즉시 거절 응답 생성 🚫")
             try:
                 simple_prompt = SIMPLE_RESPONSE_PROMPT_TEMPLATE.format(question=question)
                 gen_llm = get_generator_llm()
@@ -95,60 +128,94 @@ async def intent_classifier_node(state: AgentState) -> AgentState:
         
     return state
 
-
-async def create_query_from_info_node(state: AgentState) -> AgentState:
+@track_node_execution_time("emergency_response")
+async def emergency_response_node(state: AgentState) -> AgentState:
     """
-    Create Query From Info Node
-    부족했던 정보가 제공되면, 이를 원본 질문과 결합하여 새로운 검색 질문을 생성
+    [통합] 응급 상황 전용 노드 (검색 + 답변 생성)
+    - 별도의 평가 노드 없이 즉시 검색하고 답변을 생성합니다.
+    - 검색된 모든 문서를 LLM에게 전달하여 관련성 있는 정보만 선별해 답변하도록 합니다.
     """
-    logger.info("--- 🤖 질문 재구성 노드 실행 ---")
+    logger.info("===== 🚨 Emergency Response 노드 실행 (Fast-Track) =====")
     
-    # missing_info 데이터 구조 처리 (타입 안전하게 처리)
-    missing_info_data = state.get("_missing_info") or {}
-    missing_info = missing_info_data.get("missing_info", []) if isinstance(missing_info_data, dict) else []
-    saved_previous_question = missing_info_data.get("pending_question", "") if isinstance(missing_info_data, dict) else ""
-        
-    # 저장된 원본 질문이 있으면 사용, 없으면 현재 state의 원본 질문(현재 턴 입력) 사용
-    previous_question = saved_previous_question if saved_previous_question else state.get("previous_question", "")
+    question = state.get("question", "")
+    baby_info = state.get("baby_info", {})
     
-    logger.info(f"이전 질문: {previous_question}")
-    question = state.get("question", "") # 현재 턴의 사용자 입력(정보 제공)
-    logger.info(f"현재 질문: {question}")
-    llm = get_generator_llm()
-    if not llm:
-        return state
-    
-    missing_info_text = ", ".join(missing_info) if missing_info else ""
-        
-    prompt = CREATE_QUERY_FROM_INFO_PROMPT_TEMPLATE.format(
-        previous_question=previous_question,
-        missing_info=missing_info_text,
-        question=question
-    )
+    qna_docs = []
+    rag_docs = []
     
     try:
-        response = await llm.ainvoke([HumanMessage(content=prompt)])
-        new_query = response.content.strip()
+        # 1. QnA 검색 (invoke 대신 .func 사용)
+        # .func를 호출하면 데코레이터 포장을 벗기고 (content, artifact) 튜플을 직접 받습니다.
+        qna_content, qna_artifacts = retrieve_qna.func(query=question)
         
-        logger.info(f"새로운 검색 질문 생성: '{new_query}'")
+        if qna_artifacts:
+            for d in qna_artifacts:
+                qna_docs.append(QnADoc(**d))
         
-        # 생성된 질문으로 question 업데이트
-        state["question"] = new_query
+        # 2. Milvus 검색 (.func 사용)
+        # 인자를 키워드 아규먼트(kwargs) 형태로 명확히 전달하는 것이 좋습니다.
+        milvus_content, milvus_artifacts = milvus_knowledge_search.func(query=question)
         
-        # missing_info 초기화 (해결됨)
-        state["_missing_info"] = None
-        
-        # 재시도 플래그 설정 (무한 루프 방지)
-        state["is_retry"] = True
+        if milvus_artifacts:
+            for d in milvus_artifacts:
+                rag_docs.append(RagDoc(**d))
+
+        # 결과 저장
+        state["_qna_docs"] = qna_docs
+        state["_retrieved_docs"] = rag_docs
+        logger.info(f"🚨 응급 검색 완료: {qna_content} {milvus_content}")
         
     except Exception as e:
-        logger.error(f"질문 생성 실패: {e}")
-        # 실패 시 원본 질문과 사용자 입력을 단순 결합
-        state["question"] = f"{previous_question} {question}"
+        logger.error(f"응급 검색 중 오류(무시하고 진행): {str(e)}")
+
+    # 3. [생성] 응급 답변 생성
+    llm = get_generator_llm()
+    if not llm:
+        state["response"] = "시스템 오류입니다. 즉시 119에 연락하거나 병원을 방문하세요."
+        return state
+        
+    try:
+        baby_context = get_baby_context_string(baby_info)
+        
+        # 문서 컨텍스트 구성
+        formatted_qna = format_qna_docs(qna_docs) if qna_docs else ""
+        rag_context = get_docs_context_string(rag_docs)
+        
+        docs_context = ""
+        if formatted_qna:
+            docs_context += f"[QnA 정보]\n{formatted_qna}\n\n"
+        if rag_context:
+            docs_context += f"[검색된 문서]\n{rag_context}\n\n"
+        if not docs_context:
+            docs_context = "관련된 참조 문서가 없습니다. 의학적 상식에 기반해 답변하세요."
+
+        prompt = EMERGENCY_RESPONSE_PROMPT_TEMPLATE.format(
+            baby_context=baby_context,
+            docs_context=docs_context,
+            question=question
+        )
+        
+        # 최근 대화 3개만 참조
+        messages = state.get("messages", [])
+        clean_messages = get_clean_messages_for_generation(messages)
+        recent_history = clean_messages[-5:] if len(clean_messages) > 5 else clean_messages
+        
+        response = await llm.ainvoke(
+            [SystemMessage(content=prompt)] + recent_history,
+            config={"tags": ["stream_response"]}
+        )
+        
+        state["response"] = response.content.strip()
+        state["messages"] = [response]
+        
+    except Exception as e:
+        logger.error(f"응급 답변 생성 실패: {str(e)}", exc_info=True)
+        state["response"] = "죄송합니다. 오류가 발생했습니다. 즉시 가까운 병원 응급실을 방문하세요."
         
     return state
 
 
+@track_node_execution_time("agent")
 async def agent_node(state: AgentState) -> AgentState:
     """
     핵심 에이전트 노드 (Self-RAG)
@@ -156,7 +223,7 @@ async def agent_node(state: AgentState) -> AgentState:
     - Tool 호출이 필요하면 tool 호출
     - 이전 단계의 Tool 실행 결과를 수집하여 State 업데이트
     """
-    logger.info("--- 🤖 Agent 노드 실행 ---")
+    logger.info("===== 🤖 Agent 노드 실행 =====")
 
     # 1. ToolMessage 처리 및 State 업데이트
     messages = state.get("messages", [])
@@ -173,30 +240,27 @@ async def agent_node(state: AgentState) -> AgentState:
             
         if isinstance(msg, ToolMessage):
             tool_name = getattr(msg, "name", "")
-            content = msg.content
+            raw_data = getattr(msg, "artifact", None)
             
-            logger.info(f"🔍 ToolMessage 분석: {tool_name}")
-            
+            if not raw_data:
+                continue # artifact가 없으면 스킵 (혹은 에러처리)
+
+            logger.info(f"🔍 ToolMessage Artifact 추출: {tool_name}")
+
             if tool_name == "milvus_knowledge_search":
-                docs = parse_tool_result(content)
-                if docs:
-                    for d in docs:
-                        try:
-                            # 딕셔너리를 RagDoc 객체로 변환
-                            rag_doc = RagDoc(**d)
-                            new_retrieved_docs.append(rag_doc)
-                        except Exception as e:
-                            logger.error(f"RagDoc 변환 실패: {e}")
-                
+                # raw_data가 이미 리스트/딕셔너리 객체이므로 바로 순회
+                for d in raw_data:
+                    try:
+                        new_retrieved_docs.append(RagDoc(**d))
+                    except Exception as e:
+                        logger.error(f"RagDoc 변환 실패: {e}")
+            
             elif tool_name == "retrieve_qna":
-                docs = parse_tool_result(content)
-                if docs:
-                    for d in docs:
-                        try:
-                            qna_doc = QnADoc(**d)
-                            new_qna_docs.append(qna_doc)
-                        except Exception as e:
-                            logger.error(f"QnADoc 변환 실패: {e}")
+                for d in raw_data:
+                    try:
+                        new_qna_docs.append(QnADoc(**d))
+                    except Exception as e:
+                        logger.error(f"QnADoc 변환 실패: {e}")
 
     # State 업데이트
     if new_retrieved_docs:
@@ -234,12 +298,12 @@ async def agent_node(state: AgentState) -> AgentState:
             question=question
         )
         
+        recent_history = messages[-5:] if len(messages) > 5 else messages
         # 시스템 메시지 추가
-        messages_with_system = [SystemMessage(content=system_prompt)] + messages
+        messages_with_system = [SystemMessage(content=system_prompt)] + recent_history
         
         # Agent 실행
         response = await model_with_tools.ainvoke(messages_with_system)
-        logger.info(f"에이전트 실행 결과: {response}")
         # 응답을 메시지에 추가
         state["messages"] = [response]
         
@@ -250,12 +314,13 @@ async def agent_node(state: AgentState) -> AgentState:
     return state
 
 
+@track_node_execution_time("evaluate")
 async def evaluate_node(state: AgentState) -> AgentState:
     """
     Grade Documents Node (Self-RAG)
     검색된 문서의 질문 관련성을 평가
     """
-    logger.info("--- 🤖 평가 노드 실행 ---")
+    logger.info("===== 🤖 평가 노드 실행 =====")
     question = state.get("question") or state.get("previous_question")
     
     retrieved_docs = state.get("_retrieved_docs", [])
@@ -296,7 +361,9 @@ async def evaluate_node(state: AgentState) -> AgentState:
             docs_summary += f"\n문서 {current_idx} (QnA):\nQ: {q}\nA: {a}\n"
             current_idx += 1
         
+        baby_context = get_baby_context_string(state.get("baby_info", {}))
         evaluation_prompt = DOC_RELEVANCE_PROMPT_TEMPLATE.format(
+            baby_context=baby_context,
             question=question,
             docs_summary=docs_summary
         )
@@ -315,11 +382,23 @@ async def evaluate_node(state: AgentState) -> AgentState:
         
         # 관련성 있는 문서 인덱스 추출 (1-based index)
         relevant_indices = evaluation_result.get("relevant_indices", [])
+        
+        # [추가] 부족한 정보 추출
+        missing_info_list = evaluation_result.get("missing_info", [])
 
         state["_doc_relevance_score"] = max(0.0, min(1.0, score))
         state["_doc_relevance_passed"] = score >= 0.7
+        
+        # missing_info가 있으면 State에 저장 (이번 턴 기준 덮어쓰기)
+        if missing_info_list:
+            state["_missing_info"] = {
+                "missing_info": missing_info_list,
+                "reason": evaluation_result.get("reason", ""),
+            }
+            logger.info(f"🔍 부족한 정보 식별됨: {missing_info_list}")
+
         logger.info(f"✅ 관련성 평가 결과: {evaluation_result.get('reason', '')}")
-        logger.info(f"점수={score:.2f}, 통과={state['_doc_relevance_passed']}")
+        logger.info(f"✅ 점수={score:.2f}, 통과={state['_doc_relevance_passed']}")
         
         # [수정] RAG와 QnA 분리하여 필터링
         filtered_rag = []
@@ -342,8 +421,8 @@ async def evaluate_node(state: AgentState) -> AgentState:
                         filtered_qna.append(qna_to_evaluate[qna_idx])
         
         # 필터링 결과 적용
-        logger.info(f"관련성 필터링 (RAG): {len(retrieved_docs)} -> {len(filtered_rag)}")
-        logger.info(f"관련성 필터링 (QnA): {len(qna_docs)} -> {len(filtered_qna)}")
+        logger.info(f"✅ 관련성 필터링 (RAG): {len(retrieved_docs)} -> {len(filtered_rag)}")
+        logger.info(f"✅ 관련성 필터링 (QnA): {len(qna_docs)} -> {len(filtered_qna)}")
         
         state["_retrieved_docs"] = filtered_rag
         state["_qna_docs"] = filtered_qna # 필터링된 QnA로 교체
@@ -356,57 +435,7 @@ async def evaluate_node(state: AgentState) -> AgentState:
     
     return state
 
-
-async def analyze_missing_info_node(state: AgentState) -> AgentState:
-    """
-    Analyze Missing Info Node
-    문서가 불충분할 때 사용자에게 필요한 정보와 그 이유를 분석
-    """
-    logger.info("--- 🤖 부족한 정보 분석 노드 실행 ---")
-    question = state.get("question") or state.get("previous_question", "")
-    baby_info = state.get("baby_info", {})
-    
-    llm = get_evaluator_llm()
-    if not llm:
-        state["response"] = "죄송합니다. 현재 정보를 찾을 수 없어 답변이 어렵습니다."
-        return state
-        
-    baby_context = get_baby_context_string(baby_info)
-    
-    prompt = ANALYZE_MISSING_INFO_PROMPT_TEMPLATE.format(
-        question=question,
-        baby_context=baby_context
-    )
-    
-    try:
-        response = await llm.ainvoke([HumanMessage(content=prompt)])
-        response_text = response.content.strip()
-        
-        # JSON 파싱
-        result = parse_json_from_response(response_text)
-        
-        # 누락 정보 및 이유 추출
-        missing_info_list = result.get("missing_info", [])
-        reason = result.get("reason", "")
-        
-        logger.info(f"부족한 정보 분석 완료")
-        logger.info(f"누락 정보: {missing_info_list}, 이유: {reason}")
-        
-        # missing_info 필드에 저장
-        state["_missing_info"] = {
-            "missing_info": missing_info_list,
-            "reason": reason,
-            "pending_question": question
-        }
-        
-    except Exception as e:
-        logger.error(f"부족한 정보 분석 실패: {e}")
-        state["_missing_info"] = None
-        state["response"] = "죄송합니다. 분석 중 오류가 발생했습니다."
-        
-    return state
-
-
+@track_node_execution_time("generate")
 async def generate_node(state: AgentState) -> AgentState:
     """
     Generate Node (Self-RAG)
@@ -415,21 +444,26 @@ async def generate_node(state: AgentState) -> AgentState:
     logger.info("--- 🤖 답변 생성 노드 실행 ---")
     question = state.get("question") or state.get("previous_question", "")
     baby_info = state.get("baby_info", {})
+    messages = state.get("messages", [])
     
     missing_info_data = state.get("_missing_info")
+    is_doc_passed = state.get("_doc_relevance_passed", True)
+    
+    llm = get_generator_llm()
+    if not llm:
+        state["response"] = "죄송합니다. 현재 답변을 생성할 수 없습니다."
+        return state
+
+    prompt = ""
     
     # 1. 정보 부족 시 질문 생성 모드
-    if missing_info_data and isinstance(missing_info_data, dict):
-        logger.info("📝 Missing Info Question Generation Mode")
-        
+    if not is_doc_passed and isinstance(missing_info_data, dict):
+        logger.info("📝 정보 부족 시 질문 생성 모드(Relevance Failed)")
         missing_info_list = missing_info_data.get("missing_info", [])
         reason = missing_info_data.get("reason", "")
         
-        if not missing_info_list:
-            # 리스트가 비었다면 그냥 일반 답변 모드로 진행 (혹은 에러 처리)
-            logger.warning("missing_info 리스트가 비어있어 일반 답변 모드로 전환")
-            missing_info_data = None
-        else:
+        if missing_info_list:
+            is_missing_info_mode = True
             baby_context = get_baby_context_string(baby_info)
             missing_info_str = ", ".join(missing_info_list)
             
@@ -439,44 +473,25 @@ async def generate_node(state: AgentState) -> AgentState:
                 missing_info=missing_info_str,
                 reason=reason
             )
-            
-            try:
-                llm = get_generator_llm()
-                if not llm:
-                    state["response"] = "죄송합니다. 모델을 불러올 수 없습니다."
-                    return state
-                    
-                response = await llm.ainvoke(
-                    [SystemMessage(content=prompt)],
-                    config={"tags": ["stream_response"]}
-                )
-                generated_response = response.content.strip()
-                state["response"] = generated_response
-                state["messages"] = [response]
-                state["_retrieved_docs"] = []
-                state["_qna_docs"] = []
-                
-                return state
-                
-            except Exception as e:
-                logger.error(f"질문 생성 실패: {str(e)}", exc_info=True)
-                state["response"] = "죄송합니다. 질문 생성 중 오류가 발생했습니다."
-                return state
+        else:
+             logger.warning("missing_info 리스트가 비어있어 일반 답변 모드로 전환")
 
-    # 2. 일반 답변 생성 모드
-    
-    retrieved_docs = state.get("_retrieved_docs", [])
-    qna_docs = state.get("_qna_docs", [])
-
-    llm = get_generator_llm()
-    if not llm:
-        state["response"] = "죄송합니다. 현재 답변을 생성할 수 없습니다."
-        return state
-    
-    try:
+    # 2. 일반 답변 생성 모드 (정보 부족 모드가 아닐 때)
+    if is_doc_passed:
+        logger.info("📝 일반 답변 생성 모드(Relevance Passed)")
+        retrieved_docs = state.get("_retrieved_docs", [])
+        qna_docs = state.get("_qna_docs", [])
+        
+        # missing_info 문자열 생성
+        missing_info_str = "없음"
+        if missing_info_data and isinstance(missing_info_data, dict):
+             m_list = missing_info_data.get("missing_info", [])
+             if m_list:
+                 missing_info_str = ", ".join(m_list)
+        
         baby_context = get_baby_context_string(baby_info)
         
-        # QnA와 RAG 문서 컨텍스트 합치기 (공통 로직)
+        # 문서 컨텍스트 구성
         formatted_qna = format_qna_docs(qna_docs) if qna_docs else ""
         rag_context = get_docs_context_string(retrieved_docs)
         
@@ -491,29 +506,61 @@ async def generate_node(state: AgentState) -> AgentState:
         
         prompt = RESPONSE_GENERATION_PROMPT_TEMPLATE.format(
             baby_context=baby_context,
-            docs_context=docs_context
+            docs_context=docs_context,
+            missing_info=missing_info_str
         )
         
+        # 일반 모드에서는 답변 생성 후 missing_info 초기화
+        state["_missing_info"] = None
+
+    # 3. 공통 LLM 호출
+    try:
+        clean_messages = get_clean_messages_for_generation(messages)
+        
+        # 최근 N개만 참조 (토큰 제한)
+        recent_history = clean_messages[-5:] if len(clean_messages) > 5 else clean_messages
+            
         response = await llm.ainvoke(
-            [
-                SystemMessage(content=prompt),
-                HumanMessage(content=question)
-            ],
+            [SystemMessage(content=prompt)] + recent_history,
             config={"tags": ["stream_response"]}
         )
-
-        generated_response = response.content.strip()
-        state["response"] = generated_response
         
-        # [추가] 답변이 생성되었으므로, 부족한 정보 요청 상태 초기화
-        state["_missing_info"] = None 
-        
-        # 메시지에 추가
+        state["response"] = response.content.strip()
         state["messages"] = [response]
         
     except Exception as e:
-        logger.error(f"답변 생성 실패: {str(e)}", exc_info=True)
-        state["response"] = "죄송합니다. 답변 생성 중 오류가 발생했습니다."
+        logger.error(f"답변/질문 생성 실패: {str(e)}", exc_info=True)
+        state["response"] = "죄송합니다. 처리 중 오류가 발생했습니다."
         state["_missing_info"] = None
     
     return state
+
+def get_clean_messages_for_generation(messages):
+    """
+    메시지 히스토리에서 최근 HumanMessage까지만 남기고 그 이후의 Agent 활동 로그는 제거
+    
+    Args:
+        messages: 메시지 리스트
+    
+    Returns:
+        정리된 메시지 리스트
+    """
+    if not messages:
+        return []
+    
+    # 1. 뒤에서부터 탐색하여 '가장 최근의 HumanMessage' 인덱스 찾기
+    last_human_index = -1
+    for i, msg in enumerate(reversed(messages)):
+        if isinstance(msg, HumanMessage):
+            # reversed 상태이므로 원래 인덱스로 변환
+            last_human_index = len(messages) - 1 - i
+            break
+            
+    # 2. HumanMessage가 없다면? (예외처리)
+    if last_human_index == -1:
+        return messages[-10:]  # 그냥 최근꺼 반환
+        
+    # 3. [핵심] 마지막 질문까지만 남기고, 그 뒤의 Agent 활동 로그는 전부 삭제
+    clean_history = messages[:last_human_index + 1]
+    
+    return clean_history

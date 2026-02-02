@@ -17,7 +17,7 @@ embeddings = OpenAIEmbeddings(
     openai_api_key=settings.OPENAI_API_KEY
 )
 
-def search_qna(query: str, limit: int = 3) -> List[QnADoc]:
+def search_qna(query: str, limit: int = 5) -> List[QnADoc]:
     """
     QnA 데이터베이스(Milvus)에서 검색
     """

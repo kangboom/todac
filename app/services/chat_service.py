@@ -14,7 +14,7 @@ import uuid
 import time
 import logging
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from langchain_core.messages import HumanMessage, AIMessage
 
 logger = logging.getLogger(__name__)
@@ -144,7 +144,7 @@ async def send_message(
         }
         
         # 5. 에이전트 그래프 가져오기 및 실행 (스트리밍)
-        logger.info(f"에이전트 실행 시작: session_id={session.id}, question={question[:50]}...")
+        logger.info(f"========== 😊 에이전트 실행 시작: session_id={session.id}, question={question[:50]}... ==========")
         agent_graph = get_agent_graph()
         
         final_state = initial_state
@@ -183,7 +183,8 @@ async def send_message(
             session_id=session.id,
             role=MessageRole.USER.value,
             content=question,
-            is_emergency=False
+            is_emergency=False,
+            created_at=datetime.now(timezone.utc)
         )
         db.add(user_message)
         
@@ -225,12 +226,12 @@ async def send_message(
             role=MessageRole.ASSISTANT.value,
             content=final_response_text,
             is_emergency=final_state.get("is_emergency", False),
-            rag_sources=combined_sources if combined_sources else None
+            rag_sources=combined_sources if combined_sources else None,
+            created_at=datetime.now(timezone.utc)
         )
         db.add(assistant_message)
         
         # 9. 세션 정보 업데이트
-        session.missing_info = final_state.get("_missing_info")
         session.updated_at = datetime.now()
         
         db.add(session)

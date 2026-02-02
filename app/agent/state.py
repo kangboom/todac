@@ -31,8 +31,7 @@ class AgentState(TypedDict):
     # Self-RAG 평가 관련
     _doc_relevance_score: Optional[float]  # 문서 관련성 점수 (0.0 ~ 1.0)
     _doc_relevance_passed: bool  # 문서 관련성 통과 여부 (라우팅용)
-    _missing_info: Optional[Dict[str, Any]] # 부족한 정보 분석 결과 ({"missing_info": [...], "pending_question": "..."})
-    is_retry: bool # 부족한 정보 제공 후 재시도 여부 (무한 루프 방지)
+    _missing_info: Optional[Dict[str, Any]]  # 부족한 정보 분석 결과 ({"missing_info": [...], "reason": "..."})
     
     # 4. 출력 및 응답
     response: str # 최종 답변 텍스트

@@ -22,7 +22,7 @@ embeddings = OpenAIEmbeddings(
 MILVUS_COLLECTION_NAME = "knowledge_base"
 
 
-@tool
+@tool(response_format="content_and_artifact")
 def retrieve_qna(query: str) -> str:
     """
     미숙아 및 신생아 관련 공식 QnA(질문-답변) 데이터베이스를 검색합니다.
@@ -62,10 +62,10 @@ def retrieve_qna(query: str) -> str:
             })
             logger.info(f"{doc.question}")
             
-        import json
-        json_result = json.dumps(serialized_results, ensure_ascii=False)
         logger.info(f"QnA 검색 완료: {len(results)}개 항목 반환")
-        return json_result
+        content = f"QnA 검색 결과: {len(results)}개 항목 반환"
+        artifact = serialized_results
+        return content, artifact
         
     except Exception as e:
         logger.error(f"QnA 검색 실패: {str(e)}", exc_info=True)
@@ -85,7 +85,7 @@ def get_embedding(text: str) -> List[float]:
         raise
 
 
-@tool
+@tool(response_format="content_and_artifact")
 def milvus_knowledge_search(
     query: str,
     top_k: int = 5
@@ -123,16 +123,13 @@ def milvus_knowledge_search(
         
         # 컬렉션 가져오기
         collection = get_milvus_collection(MILVUS_COLLECTION_NAME)
-        logger.info(f"컬렉션 '{MILVUS_COLLECTION_NAME}' 가져오기 완료")
         
         # 컬렉션 상태 확인
         collection.load()
-        logger.info("컬렉션 로드 완료")
         
         # 데이터 개수 확인
         num_entities = collection.num_entities
-        logger.info(f"컬렉션 엔티티 수: {num_entities}")
-        
+ 
         if num_entities == 0:
             logger.warning("⚠️ Milvus 컬렉션에 데이터가 없습니다. 문서를 먼저 업로드해주세요.")
             return []
@@ -180,7 +177,10 @@ def milvus_knowledge_search(
                 )
         
         logger.info(f"=== Milvus 검색 완료: {len(retrieved_docs)}개 문서 검색됨 ===")
-        return retrieved_docs
+
+        content = f"Milvus 검색 결과: {len(retrieved_docs)}개 문서 검색됨"
+        artifact = retrieved_docs
+        return content, artifact
         
     except Exception as e:
         logger.error(f"❌ Milvus 검색 실패: {str(e)}", exc_info=True)
