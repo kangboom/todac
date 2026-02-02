@@ -60,7 +60,8 @@ def get_conversation_history(
     return [
         ConversationMessage(
             role="user" if msg.role == MessageRole.USER.value else "assistant",
-            content=msg.content
+            content=msg.content,
+            is_retry=msg.is_retry
         )
         for msg in messages
     ]

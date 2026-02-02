@@ -64,3 +64,4 @@ class ConversationMessage(BaseModel):
     """대화 이력 메시지 (에이전트용)"""
     role: str = Field(..., description="메시지 역할 (user/assistant)")
     content: str = Field(..., description="메시지 내용")
+    is_retry: bool = Field(..., description="재질문 모드 여부")

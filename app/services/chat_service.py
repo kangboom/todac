@@ -114,7 +114,8 @@ async def send_message(
                 if msg.role == "user":
                     history_messages.append(HumanMessage(content=content))
                 elif msg.role == "assistant":
-                    history_messages.append(AIMessage(content=content))
+                    is_retry = getattr(msg, "is_retry", False)
+                    history_messages.append(AIMessage(content=content, additional_kwargs={"is_retry": is_retry}))
         
         history_messages.append(HumanMessage(content=question))
 
@@ -220,12 +221,13 @@ async def send_message(
         combined_sources.extend(extracted_qna_sources)
         
         final_response_text = final_state.get("response", "")
-            
+
         assistant_message = ChatMessage(
             session_id=session.id,
             role=MessageRole.ASSISTANT.value,
             content=final_response_text,
             is_emergency=final_state.get("is_emergency", False),
+            is_retry=final_state.get("is_retry", False),
             rag_sources=combined_sources if combined_sources else None,
             created_at=datetime.now(timezone.utc)
         )

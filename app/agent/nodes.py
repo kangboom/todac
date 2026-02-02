@@ -104,7 +104,7 @@ async def emergency_response_node(state: AgentState) -> AgentState:
     
     question = state.get("question", "")
     baby_info = state.get("baby_info", {})
-    
+    state["is_emergency"] = True
     qna_docs = []
     rag_docs = []
     
@@ -421,8 +421,37 @@ async def generate_node(state: AgentState) -> AgentState:
 
     prompt = ""
     
-    # 1. 정보 부족 시 질문 생성 모드
+    # 0. 이전 턴의 AI 메시지 찾기 (is_retry 확인용)
+    last_ai_msg = None
+    
+    # 역순으로 탐색하여 "현재 질문(HumanMessage)" 이전에 있는 "마지막 AIMessage"를 찾음
+    found_current_human_msg = False
+    
+    for m in reversed(messages):
+        if isinstance(m, HumanMessage):
+            found_current_human_msg = True
+            continue
+            
+        # 현재 턴의 질문을 찾은 후에 나오는 AIMessage가 "이전 턴의 답변"임
+        if found_current_human_msg and isinstance(m, AIMessage):
+            last_ai_msg = m
+            break
+        
+    prev_is_retry = False
+    if last_ai_msg:
+        prev_is_retry = last_ai_msg.additional_kwargs.get("is_retry", False)
+
+    should_ask_info = False
     if not is_doc_passed and isinstance(missing_info_data, dict):
+        if prev_is_retry:
+            logger.info("🚫 이전 턴에서 이미 재질문(is_retry=True)을 했으므로, 이번에는 강제로 답변 생성 모드로 전환합니다.")
+            should_ask_info = False
+        else:
+            should_ask_info = True
+
+    # 1. 정보 부족 시 질문 생성 모드
+    if should_ask_info:
+        state["is_retry"] = True
         logger.info("📝 정보 부족 시 질문 생성 모드(Relevance Failed)")
         missing_info_list = missing_info_data.get("missing_info", [])
         reason = missing_info_data.get("reason", "")
@@ -439,10 +468,13 @@ async def generate_node(state: AgentState) -> AgentState:
             )
         else:
              logger.warning("missing_info 리스트가 비어있어 일반 답변 모드로 전환")
+             should_ask_info = False 
+             state["is_retry"] = False
 
-    # 2. 일반 답변 생성 모드 (정보 부족 모드가 아닐 때)
-    if is_doc_passed:
-        logger.info("📝 일반 답변 생성 모드(Relevance Passed)")
+    # 2. 일반 답변 생성 모드 (정보 부족 모드가 아니거나, 강제 전환된 경우)
+    if not should_ask_info:
+        state["is_retry"] = False
+        logger.info("📝 일반 답변 생성 모드(Relevance Passed or Forced)")
         retrieved_docs = state.get("_retrieved_docs", [])
         qna_docs = state.get("_qna_docs", [])
         

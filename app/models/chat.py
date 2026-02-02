@@ -49,6 +49,7 @@ class ChatMessage(Base):
     session_id = Column(UUID(as_uuid=True), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
     role = Column(String(20), nullable=False, comment="화자: USER 또는 ASSISTANT")
     content = Column(Text, nullable=False, comment="대화 내용 텍스트")
+    is_retry = Column(Boolean, default=False, nullable=False, comment="재질문 모드 여부")
     is_emergency = Column(Boolean, default=False, nullable=False, index=True, comment="응급 상황 감지 여부 (통계 분석용)")
     rag_sources = Column(JSONB, nullable=True, comment="참조 문서 정보 (예: [{'doc_id': '...', 'score': 0.9}])")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
