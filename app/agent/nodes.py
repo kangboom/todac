@@ -19,45 +19,10 @@ from app.services.qna_service import format_qna_docs
 from app.dto.qna import QnADoc
 from app.dto.rag import RagDoc
 from app.core.llm_factory import get_generator_llm, get_evaluator_llm
-from app.agent.utils import parse_tool_result, parse_json_from_response, log_message_history
+from app.agent.utils import parse_json_from_response, track_node_execution_time
 import logging
-import time
-from functools import wraps
-from typing import Callable, Awaitable, TypeVar
 
 logger = logging.getLogger(__name__)
-
-T = TypeVar('T', bound=AgentState)
-
-
-def track_node_execution_time(node_name: str):
-    """
-    노드 실행 시간을 추적하는 데코레이터
-    
-    Args:
-        node_name: 노드 이름 (로깅용)
-    
-    Usage:
-        @track_node_execution_time("intent_classifier")
-        async def intent_classifier_node(state: AgentState) -> AgentState:
-            ...
-    """
-    def decorator(func: Callable[[AgentState], Awaitable[AgentState]]):
-        @wraps(func)
-        async def wrapper(state: AgentState) -> AgentState:
-            start_time = time.time()
-            try:
-                result = await func(state)
-                elapsed_time = time.time() - start_time
-                logger.info(f"====== ⏱️ [{node_name}] 실행 시간: {elapsed_time:.3f}초 ({elapsed_time*1000:.2f}ms) ⏱️ =======")
-                return result
-            except Exception as e:
-                elapsed_time = time.time() - start_time
-                logger.error(f"====== ⏱️ [{node_name}] 실행 시간: {elapsed_time:.3f}초 (에러 발생: {str(e)}) ⏱️ =======")
-                raise
-        return wrapper
-    return decorator
-
 
 @track_node_execution_time("intent_classifier")
 async def intent_classifier_node(state: AgentState) -> AgentState:
@@ -195,7 +160,7 @@ async def emergency_response_node(state: AgentState) -> AgentState:
             question=question
         )
         
-        # 최근 대화 3개만 참조
+        # 최근 대화 5개만 참조
         messages = state.get("messages", [])
         clean_messages = get_clean_messages_for_generation(messages)
         recent_history = clean_messages[-5:] if len(clean_messages) > 5 else clean_messages
@@ -463,7 +428,6 @@ async def generate_node(state: AgentState) -> AgentState:
         reason = missing_info_data.get("reason", "")
         
         if missing_info_list:
-            is_missing_info_mode = True
             baby_context = get_baby_context_string(baby_info)
             missing_info_str = ", ".join(missing_info_list)
             

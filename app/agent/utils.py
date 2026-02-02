@@ -4,8 +4,11 @@ ToolMessage 및 LLM 응답 파싱
 """
 import json
 import logging
-from typing import List
+from typing import List, Callable, Awaitable
 from langchain_core.messages import BaseMessage
+import time
+from functools import wraps
+from app.agent.state import AgentState
 
 logger = logging.getLogger(__name__)
 
@@ -84,3 +87,31 @@ def log_message_history(messages: List[BaseMessage], max_content_length: int = 1
     
     context_str = f" [{context}]" if context else ""
     logger.info(f"📜 최근 히스토리 ({len(messages)}개){context_str}:\n" + "\n".join(history_summary))
+
+def track_node_execution_time(node_name: str):
+    """
+    노드 실행 시간을 추적하는 데코레이터
+    
+    Args:
+        node_name: 노드 이름 (로깅용)
+    
+    Usage:
+        @track_node_execution_time("intent_classifier")
+        async def intent_classifier_node(state: AgentState) -> AgentState:
+            ...
+    """
+    def decorator(func: Callable[[AgentState], Awaitable[AgentState]]):
+        @wraps(func)
+        async def wrapper(state: AgentState) -> AgentState:
+            start_time = time.time()
+            try:
+                result = await func(state)
+                elapsed_time = time.time() - start_time
+                logger.info(f"====== ⏱️ [{node_name}] 실행 시간: {elapsed_time:.3f}초 ({elapsed_time*1000:.2f}ms) ⏱️ =======")
+                return result
+            except Exception as e:
+                elapsed_time = time.time() - start_time
+                logger.error(f"====== ⏱️ [{node_name}] 실행 시간: {elapsed_time:.3f}초 (에러 발생: {str(e)}) ⏱️ =======")
+                raise
+        return wrapper
+    return decorator
