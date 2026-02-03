@@ -78,7 +78,7 @@ def get_embedding(text: str) -> List[float]:
 @tool(response_format="content_and_artifact")
 def milvus_knowledge_search(
     query: str,
-    top_k: int = 5
+    top_k: int = 3
 ) -> List[Dict[str, Any]]:
     """
     미숙아 관련 지식베이스에서 전문 의학 정보를 검색합니다.

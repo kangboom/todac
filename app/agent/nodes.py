@@ -306,8 +306,8 @@ async def evaluate_node(state: AgentState) -> AgentState:
     
     try:
         # 평가 대상 구성
-        rag_to_evaluate = retrieved_docs[:5]
-        qna_to_evaluate = qna_docs[:3]
+        rag_to_evaluate = retrieved_docs[:3]
+        qna_to_evaluate = qna_docs[:5]
         
         docs_summary = ""
         current_idx = 1
