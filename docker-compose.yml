@@ -102,7 +102,7 @@ services:
 
   # Milvus 벡터 데이터베이스
   milvus:
-    image: milvusdb/milvus:v2.4.0
+    image: milvusdb/milvus:v2.5.16
     container_name: todac-milvus
     command: ["milvus", "run", "standalone"]
     environment:

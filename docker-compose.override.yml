@@ -10,4 +10,12 @@ services:
       - ./main.py:/app/main.py
     environment:
       - DEBUG=True
-
+  worker: 
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./app:/app/app
+      - ./main.py:/app/main.py
+    environment:
+      - DEBUG=True
