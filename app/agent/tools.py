@@ -2,24 +2,16 @@
 Milvus 검색 도구 (Hybrid Search 구현)
 """
 from typing import List, Dict, Any, Optional
-from langchain_openai import OpenAIEmbeddings
 from langchain_core.tools import tool
-from pymilvus import Collection
+from pymilvus import Collection, AnnSearchRequest, Function, FunctionType
 from app.services.qna_service import search_qna # [추가]
-from app.core.database import get_milvus_collection
-from app.core.config import settings
+from app.core.database import get_milvus_client
+from app.core.config import get_embeddings
+from app.core.milvus_schema import MILVUS_COLLECTION_NAME
 import logging
 
 logger = logging.getLogger(__name__)
 
-# LangChain OpenAI Embeddings 클라이언트
-embeddings = OpenAIEmbeddings(
-    api_key=settings.OPENAI_API_KEY,
-    model=settings.OPENAI_MODEL_EMBEDDING
-) if settings.OPENAI_API_KEY else None
-
-# Milvus 컬렉션 이름
-MILVUS_COLLECTION_NAME = "knowledge_base"
 
 
 @tool(response_format="content_and_artifact")
@@ -58,7 +50,7 @@ def retrieve_qna(query: str) -> str:
                 "answer": getattr(doc, "answer", ""),
                 "source": getattr(doc, "source", ""),
                 "category": getattr(doc, "category", ""),
-                "score": getattr(doc, "score", 0.0)
+                "distance": getattr(doc, "distance", 0.0)
             })
             logger.info(f"{doc.question}")
             
@@ -73,11 +65,9 @@ def retrieve_qna(query: str) -> str:
 
 
 def get_embedding(text: str) -> List[float]:
-    """텍스트를 임베딩 모델로 임베딩 (환경 변수에서 모델 가져오기)"""
-    if not embeddings:
-        raise ValueError("OPENAI_API_KEY가 설정되지 않았습니다.")
-    
+    """텍스트를 임베딩 모델로 임베딩 (싱글톤 사용)"""
     try:
+        embeddings = get_embeddings()
         embedding = embeddings.embed_query(text)
         return embedding
     except Exception as e:
@@ -117,56 +107,72 @@ def milvus_knowledge_search(
         검색된 문서 리스트 (doc_id, content, score, filename, category 포함)
     """
     try:
-        logger.info(f"=== Milvus 검색 시작 ===")
+        logger.info(f"=== Milvus 하이브리드 검색 시작 ===")
         logger.info(f"검색 질문: {query}")
         logger.info(f"상위 K개: {top_k}")
         
-        # 컬렉션 가져오기
-        collection = get_milvus_collection(MILVUS_COLLECTION_NAME)
+        # 1. 싱글톤 클라이언트 사용
+        client = get_milvus_client()
         
-        # 컬렉션 상태 확인
-        collection.load()
-        
-        # 데이터 개수 확인
-        num_entities = collection.num_entities
- 
-        if num_entities == 0:
+        # 2. 컬렉션 존재 여부 확인
+        if not client.has_collection(MILVUS_COLLECTION_NAME):
             logger.warning("⚠️ Milvus 컬렉션에 데이터가 없습니다. 문서를 먼저 업로드해주세요.")
             return []
         
-        # 질문 임베딩
+        # 3. [Dense Search] 요청서 작성 (의미 검색)
         query_embedding = get_embedding(query)
         
-        # 검색 파라미터 (데이터가 적을 때 nprobe 조정)
-        # nprobe는 nlist보다 작아야 함 (기본 nlist=1024)
-        nprobe = min(10, max(1, num_entities // 100 + 1))
-        search_params = {
-            "metric_type": "L2",  # 유클리드 거리
-            "params": {"nprobe": nprobe}
-        }
-        
-        # 벡터 검색 수행 (카테고리 필터 없이 전체 검색)
-        logger.info(f"Milvus 벡터 검색 실행 중...")
-        results = collection.search(
+        dense_req = AnnSearchRequest(
             data=[query_embedding],
-            anns_field="embedding",  # 임베딩 필드명
-            param=search_params,
+            anns_field="embedding",
+            param={"metric_type": "L2", "params": {"nprobe": 10}},
+            limit=top_k * 3  
+        )
+        
+        # 4. [Sparse Search] 요청서 작성 (키워드 검색)
+        sparse_req = AnnSearchRequest(
+            data=[query],  
+            anns_field="sparse",
+            param={"metric_type": "BM25", "params": {"drop_ratio_search": 0.2}},
+            limit=top_k * 3
+        )
+        
+        # 5. RRF Ranker 설정
+        ranker = Function(
+            name="rrf",
+            input_field_names=[],
+            function_type=FunctionType.RERANK,
+            params={
+                "reranker": "rrf",
+                "k": 100
+            }
+        )
+        
+        # 6. 하이브리드 검색 실행
+        logger.info(f"Milvus 하이브리드 검색 실행 중...")
+        results = client.hybrid_search(
+            collection_name=MILVUS_COLLECTION_NAME,
+            reqs=[dense_req, sparse_req],
+            ranker=ranker,
             limit=top_k,
             output_fields=["doc_id", "content", "filename", "category", "chunk_index", "headers"]
         )
         
-        # 결과 파싱
+        # 7. 결과 파싱
         retrieved_docs = []
-        if results and len(results) > 0:
-            for idx, hit in enumerate(results[0]):
+        for hits in results:
+            for idx, hit in enumerate(hits):
+                entity = hit.get('entity', {})
+                distance = hit.get('distance', 0.0)
+                
                 doc = {
-                    "doc_id": hit.entity.get("doc_id"),
-                    "content": hit.entity.get("content", ""),
-                    "filename": hit.entity.get("filename", ""),
-                    "category": hit.entity.get("category", ""),
-                    "chunk_index": hit.entity.get("chunk_index", 0),
-                    "headers": hit.entity.get("headers", "{}"),
-                    "score": hit.distance,  # 거리 (낮을수록 유사)
+                    "doc_id": entity.get("doc_id"),
+                    "content": entity.get("content", ""),
+                    "filename": entity.get("filename", ""),
+                    "category": entity.get("category", ""),
+                    "chunk_index": entity.get("chunk_index", 0),
+                    "headers": entity.get("headers", "{}"),
+                    "distance": distance,  
                 }
                 retrieved_docs.append(doc)
                 logger.info(
@@ -176,9 +182,9 @@ def milvus_knowledge_search(
                     f"content_length={len(doc['content'])}"
                 )
         
-        logger.info(f"=== Milvus 검색 완료: {len(retrieved_docs)}개 문서 검색됨 ===")
+        logger.info(f"=== Milvus 하이브리드 검색 완료: {len(retrieved_docs)}개 문서 검색됨 ===")
 
-        content = f"Milvus 검색 결과: {len(retrieved_docs)}개 문서 검색됨"
+        content = f"Milvus 하이브리드 검색 결과: {len(retrieved_docs)}개 문서 검색됨"
         artifact = retrieved_docs
         return content, artifact
         

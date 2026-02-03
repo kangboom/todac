@@ -9,7 +9,7 @@ class QnADoc(BaseModel):
     answer: str
     source: str
     category: str
-    score: float # 검색 유사도 점수
+    distance: float
 
 class QnACreateRequest(BaseModel):
     """QnA 생성 요청 DTO (API -> Service)"""

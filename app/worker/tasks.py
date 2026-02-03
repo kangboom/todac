@@ -6,7 +6,6 @@ import uuid
 import logging
 import json
 import boto3
-from typing import List
 from app.core.taskiq import broker
 from app.core.database import SessionLocal
 from app.models.knowledge import KnowledgeDoc
@@ -18,8 +17,10 @@ from app.services.markdown_service import cleanup_markdown_with_llm
 from app.services.parser_service import get_parser
 from app.services.s3_service import upload_to_s3, delete_from_s3, generate_storage_paths
 from app.agent.tools import get_embedding
-from app.core.milvus_schema import get_milvus_collection_safe
-from app.core.config import settings
+from app.core.milvus_schema import MILVUS_COLLECTION_NAME
+from app.core.database import get_milvus_client
+from app.core.config import settings, get_embeddings
+from app.core.milvus_schema import create_milvus_collection
 
 logger = logging.getLogger(__name__)
 
@@ -111,59 +112,92 @@ async def process_document_task(
         )
         uploaded_s3_keys.append(storage_url)
 
-        # 6. 임베딩 및 Milvus 저장
+        # 6. 임베딩 및 Milvus 저장 (Batch 최적화 적용)
         try:
-            collection = get_milvus_collection_safe()
-            milvus_data = []
+            logger.info(f"Milvus 컬렉션 생성 시작...")
+            create_milvus_collection()
+            logger.info(f"Milvus 컬렉션 생성 완료...")
+
+            embeddings = get_embeddings()
+            client = get_milvus_client()
             
+            embedding_texts = []
+            prepared_metadata = [] 
+
             for chunk in chunks:
+                # 헤더 정보 추출
                 header_metadata = {
                     k: v for k, v in chunk.metadata.items() 
                     if k.startswith("Header")
                 }
                 
+                # 임베딩용 텍스트 구성
                 if header_metadata:
                     sorted_headers = [header_metadata[k] for k in sorted(header_metadata.keys())]
                     header_path = " > ".join(sorted_headers)
-                    embedding_text = f"{header_path}\n\n{chunk.text}"
+                    text_for_embedding = f"{header_path}\n\n{chunk.text}"
                 else:
-                    embedding_text = chunk.text
+                    text_for_embedding = chunk.text
                 
-                embedding = get_embedding(embedding_text)
+                # 리스트에 추가 (나중에 한방에 변환)
+                embedding_texts.append(text_for_embedding)
                 
-                headers_json = json.dumps(header_metadata, ensure_ascii=False) if header_metadata else "{}"
+                # 나중에 row 만들 때 매칭할 정보 저장
+                prepared_metadata.append({
+                    "chunk": chunk,
+                    "headers_json": json.dumps(header_metadata, ensure_ascii=False) if header_metadata else "{}"
+                })
+
+            # [Step 2] 배치 임베딩 실행 (가장 큰 성능 향상 구간)
+            logger.info(f"임베딩 생성 시작 (총 {len(embedding_texts)}개 청크 Batch 처리)...")
+            vectors = embeddings.embed_documents(embedding_texts)
+            logger.info("임베딩 생성 완료")
+
+            # [Step 3] 데이터 조립 및 Milvus 배치 저장
+            batch_size = 100 
+            rows = []
+            total_count = 0
+            
+            for i, vector in enumerate(vectors):
+                meta = prepared_metadata[i]
+                chunk = meta['chunk']
                 
-                milvus_data.append({
+                row = {
                     "doc_id": str(doc_id),
                     "chunk_index": chunk.chunk_index,
-                    "embedding": embedding,
+                    "embedding": vector,
                     "content": chunk.text[:65535],
                     "filename": filename[:255],
                     "category": category[:50],
-                    "headers": headers_json[:2048]
-                })
+                    "headers": meta['headers_json'][:2048]
+                }
+                rows.append(row)
+                total_count += 1
+                
+                # 배치 단위 저장
+                if len(rows) >= batch_size:
+                    client.insert(
+                        collection_name=MILVUS_COLLECTION_NAME,
+                        data=rows
+                    )
+                    logger.info(f"Milvus 배치 저장: {total_count}/{len(chunks)}개 청크 처리 중...")
+                    rows = []
+
+            # 남은 데이터 저장
+            if rows:
+                client.insert(
+                    collection_name=MILVUS_COLLECTION_NAME,
+                    data=rows
+                )
             
-            collection.insert(milvus_data)
-            collection.flush()
             milvus_inserted = True
-            logger.info(f"Milvus 저장 완료: {len(milvus_data)}개 청크")
+            logger.info(f"Milvus 저장 완료: 총 {total_count}개 청크")
             
         except Exception as e:
             logger.error(f"Milvus 저장 실패: {e}")
             raise e
 
         # 7. DB 저장 (KnowledgeDoc)
-        # 이미 API에서 raw_pdf_url 등을 알고 있으므로 여기서 최종 저장을 수행
-        # raw_pdf_url은 raw_s3_key를 통해 구성하거나 API에서 넘겨받을 수도 있지만,
-        # 여기서는 raw_s3_key를 알고 있으니 URL을 구성하거나 S3 서비스 함수 활용
-        
-        # raw_s3_key 예: raw/uuid/filename.pdf
-        # s3_service.upload_to_s3가 반환하는 형식에 맞춰야 함
-        # 여기서는 간단히 raw_s3_key를 그대로 사용하거나, 필요한 URL 포맷으로 저장
-        
-        # upload_to_s3 함수는 전체 URL을 반환하므로, API 서버에서 업로드했을 때 받은 URL을 넘겨받는 게 좋음
-        # 하지만 raw_s3_key만 받아도 충분함.
-        
         raw_pdf_url = f"https://{settings.S3_BUCKET_NAME}.s3.{settings.S3_REGION}.amazonaws.com/{raw_s3_key}"
 
         meta_info = {
@@ -195,8 +229,7 @@ async def process_document_task(
         # 롤백
         db.rollback()
         
-        # S3 삭제 (Processed만 삭제, Raw는 남길지 고민 필요하지만 실패 시 다 지우는 게 깔끔)
-        # Raw 파일은 태스크 시작 전 API 서버가 올린 것. 실패 시 지워야 함.
+        # S3 삭제
         try:
             # Raw 파일 삭제
             raw_url = f"https://{settings.S3_BUCKET_NAME}.s3.{settings.S3_REGION}.amazonaws.com/{raw_s3_key}"
@@ -211,13 +244,13 @@ async def process_document_task(
         # Milvus 삭제
         if milvus_inserted:
             try:
-                collection = get_milvus_collection_safe()
-                collection.delete(expr=f'doc_id == "{doc_id_str}"')
-                collection.flush()
+                client = get_milvus_client()
+                client.delete(
+                    collection_name=MILVUS_COLLECTION_NAME,
+                    filter=f'doc_id == "{doc_id_str}"'
+                )
             except Exception as m_err:
                 logger.error(f"Milvus 롤백 실패: {m_err}")
-                
-        # 실패 상태 DB 기록 등이 필요하다면 여기서 수행 (지금은 생략)
         
     finally:
         db.close()

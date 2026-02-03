@@ -4,7 +4,8 @@
 from sqlalchemy.orm import Session
 from fastapi import HTTPException, status, UploadFile
 from app.models.knowledge import KnowledgeDoc
-from app.core.milvus_schema import get_milvus_collection_safe
+from app.core.milvus_schema import MILVUS_COLLECTION_NAME, create_milvus_collection
+from app.core.database import get_milvus_client
 from app.dto.knowledge import BatchDocumentResult
 from app.services.s3_service import upload_to_s3, delete_from_s3, generate_storage_paths
 from app.services.parser_service import get_parser
@@ -187,9 +188,13 @@ def delete_document(
     
     # Milvus에서 삭제
     try:
-        collection = get_milvus_collection_safe()
-        collection.delete(expr=f'doc_id == "{doc_id}"')
-        collection.flush()
+        client = get_milvus_client()
+        create_milvus_collection()  # 컬렉션이 없으면 생성
+        
+        client.delete(
+            collection_name=MILVUS_COLLECTION_NAME,
+            filter=f'doc_id == "{doc_id}"'
+        )
         
         logger.info(f"Milvus에서 문서 삭제 완료: doc_id={doc_id}")
         

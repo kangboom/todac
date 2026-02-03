@@ -3,6 +3,10 @@
 """
 from pydantic_settings import BaseSettings
 from typing import Optional
+from langchain_openai import OpenAIEmbeddings
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -14,6 +18,11 @@ class Settings(BaseSettings):
     # Milvus 설정
     MILVUS_HOST: str = "milvus"
     MILVUS_PORT: int = 19530
+    
+    @property
+    def MILVUS_URI(self) -> str:
+        """Milvus URI 생성 (MilvusClient용)"""
+        return f"http://{self.MILVUS_HOST}:{self.MILVUS_PORT}"
     
     # JWT 설정
     SECRET_KEY: str = "your-secret-key-change-in-production"
@@ -57,3 +66,39 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# OpenAIEmbeddings 싱글톤 인스턴스
+_embeddings: Optional[OpenAIEmbeddings] = None
+
+
+def get_embeddings() -> OpenAIEmbeddings:
+    """
+    OpenAIEmbeddings 싱글톤 인스턴스 가져오기
+    """
+    global _embeddings
+    
+    if _embeddings is None:
+        if not settings.OPENAI_API_KEY:
+            raise ValueError("OPENAI_API_KEY가 설정되지 않았습니다.")
+        
+        try:
+            logger.info(f"OpenAIEmbeddings 초기화: model={settings.OPENAI_MODEL_EMBEDDING}")
+            _embeddings = OpenAIEmbeddings(
+                model=settings.OPENAI_MODEL_EMBEDDING,
+                openai_api_key=settings.OPENAI_API_KEY,
+                chunk_size=200,
+            )
+            logger.info("OpenAIEmbeddings 초기화 완료")
+        except Exception as e:
+            logger.error(f"OpenAIEmbeddings 초기화 실패: {e}")
+            raise
+    
+    return _embeddings
+
+
+def reset_embeddings():
+    """
+    OpenAIEmbeddings 인스턴스 리셋 (테스트 또는 재초기화 시 사용)
+    """
+    global _embeddings
+    _embeddings = None
