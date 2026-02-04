@@ -9,7 +9,8 @@ from app.api.v1 import auth, users, chat, feedback
 from app.api.v1.admin import (
     knowledge as admin_knowledge,
     dashboard as admin_dashboard,
-    qna as admin_qna  # [추가]
+    qna as admin_qna,
+    feedback as admin_feedback
 )
 from app.core.config import settings
 from app.core.database import Base, engine
@@ -121,3 +122,4 @@ app.include_router(feedback.router, prefix="/api/v1", tags=["feedback"])
 app.include_router(admin_knowledge.router, prefix="/api/v1", tags=["admin"])
 app.include_router(admin_dashboard.router, prefix="/api/v1", tags=["admin"])
 app.include_router(admin_qna.router, prefix="/api/v1/admin/qna", tags=["admin-qna"]) # [추가]
+app.include_router(admin_feedback.router, prefix="/api/v1/admin/feedback", tags=["admin-feedback"])
