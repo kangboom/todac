@@ -198,7 +198,7 @@ async def process_document_task(
             raise e
 
         # 7. DB 저장 (KnowledgeDoc)
-        raw_pdf_url = f"https://{settings.S3_BUCKET_NAME}.s3.{settings.S3_REGION}.amazonaws.com/{raw_s3_key}"
+        raw_pdf_url = f"s3://{settings.S3_BUCKET_NAME}/{raw_s3_key}"
 
         meta_info = {
             "category": category,
@@ -232,7 +232,7 @@ async def process_document_task(
         # S3 삭제
         try:
             # Raw 파일 삭제
-            raw_url = f"https://{settings.S3_BUCKET_NAME}.s3.{settings.S3_REGION}.amazonaws.com/{raw_s3_key}"
+            raw_url = f"s3://{settings.S3_BUCKET_NAME}/{raw_s3_key}"
             delete_from_s3(raw_url)
             
             # Processed 파일 삭제

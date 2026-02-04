@@ -40,7 +40,7 @@ services:
   worker:
     image: kangbb/todac-backend:latest
     container_name: todac-worker
-    command: ["taskiq", "worker", "app.core.taskiq:broker", "app.worker.tasks"]
+    command: ["taskiq", "worker", "app.core.taskiq:broker", "app.worker.tasks", "--max-async-tasks", "1"]
     env_file:
       - .env
     environment:
