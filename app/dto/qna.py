@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 
 class QnADoc(BaseModel):
@@ -30,3 +30,10 @@ class QnAResponse(BaseModel):
     
     class Config:
         from_attributes = True # Pydantic v2 (ORM Mode)
+
+class QnAListResponse(BaseModel):
+    """QnA 목록 응답 DTO (Pagination)"""
+    items: List[QnAResponse]
+    total: int
+    page: int
+    size: int

@@ -4,7 +4,7 @@ from typing import List
 
 from app.core.database import get_db
 from app.api.dependencies import require_admin
-from app.dto.qna import QnACreateRequest, QnAResponse
+from app.dto.qna import QnACreateRequest, QnAResponse, QnAListResponse
 from app.services import qna_service
 from app.models.user import User
 from app.models.qna import OfficialQnA
@@ -37,18 +37,25 @@ def create_qna(
             detail=f"QnA 등록 실패: {str(e)}"
         )
 
-@router.get("/", response_model=List[QnAResponse])
+@router.get("/", response_model=QnAListResponse)
 def get_qna_list(
     skip: int = 0,
-    limit: int = 100,
+    limit: int = 10,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_admin)
 ):
     """
-    QnA 목록 조회 (최신순)
+    QnA 목록 조회 (최신순, 페이지네이션)
     """
+    total = db.query(OfficialQnA).count()
     qnas = db.query(OfficialQnA).order_by(OfficialQnA.id.desc()).offset(skip).limit(limit).all()
-    return qnas
+    
+    return QnAListResponse(
+        items=qnas,
+        total=total,
+        page=(skip // limit) + 1,
+        size=limit
+    )
 
 @router.post("/sync")
 def sync_qna_db(
