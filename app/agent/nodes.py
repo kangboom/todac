@@ -514,6 +514,7 @@ async def generate_node(state: AgentState) -> AgentState:
         clean_messages = get_clean_messages_for_generation(messages)
         
         recent_history = clean_messages[-5:] if len(clean_messages) > 5 else clean_messages
+
         response = await llm.ainvoke(
             [SystemMessage(content=prompt)] + recent_history,
             config={"tags": ["stream_response"]}
