@@ -31,8 +31,7 @@ class AgentState(TypedDict):
     # Self-RAG 평가 관련
     _doc_relevance_score: Optional[float]  # 문서 관련성 점수 (0.0 ~ 1.0)
     _doc_relevance_passed: bool  # 문서 관련성 통과 여부 (라우팅용)
-    _missing_info: Optional[Dict[str, Any]]  # 부족한 정보 분석 결과 ({"missing_info": [...], "reason": "..."})
-    
+
     # 4. 출력 및 응답
     response: str # 최종 답변 텍스트
     
@@ -40,3 +39,13 @@ class AgentState(TypedDict):
     is_emergency: bool # 응급 상황 여부
     
     response_time: Optional[float] # 답변 생성 시간 (초)
+    
+    # 5. 코칭 상태 (Coaching Agent)
+    goal: Optional[str]  # 현재 진행 중인 코칭 목표 (예: "수유 자세 교정")
+    coaching_steps: Optional[List[str]]  # 목표 달성을 위한 세부 단계 리스트
+    current_step_idx: int  # 현재 진행 중인 단계 인덱스 (0부터 시작)
+    goal_status: Optional[str]  # 목표 상태 플래그: 'ready' | 'in_progress' | 'completed' | 'paused'
+    
+    # 6. 목표 승인 (Goal Evaluator)
+    _goal_approved: Optional[bool]  # 사용자의 목표/계획 승인 여부
+    _goal_feedback: Optional[str]  # 목표 수정 시 사용자 피드백 (Goal Evaluator → Goal Setter)
