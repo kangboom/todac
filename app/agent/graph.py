@@ -97,6 +97,24 @@ def route_evaluator(state: AgentState) -> str:
     return "coach_agent"
 
 
+def route_goal_setter(state: AgentState) -> str:
+    """
+    Goal Setter 출력에 따른 라우팅
+    - tool_calls가 있으면 → goal_setter_tool (검색 도구 실행)
+    - tool_calls가 없으면 → goal_evaluator (목표 수립 완료)
+    """
+    messages = state.get("messages", [])
+    
+    if messages:
+        last_msg = messages[-1]
+        if isinstance(last_msg, AIMessage) and getattr(last_msg, "tool_calls", None):
+            logger.info("🔧 Goal Setter → ToolNode (검색 도구 실행)")
+            return "goal_setter_tool"
+            
+    logger.info("✅ Goal Setter → Goal Evaluator (목표 수립 완료)")
+    return "goal_evaluator"
+
+
 def create_coaching_graph_builder() -> StateGraph:
     """
     코칭 에이전트 StateGraph 빌더 생성
@@ -105,7 +123,9 @@ def create_coaching_graph_builder() -> StateGraph:
     START → intent_classifier
       ├─ emergency → emergency_response → END
       ├─ irrelevant → END
-      └─ relevant → goal_setter → [INTERRUPT] → goal_evaluator
+      └─ relevant → goal_setter
+                      ├─ tool_calls → goal_setter_tool → goal_setter (루프)
+                      └─ 완료 → [INTERRUPT] → goal_evaluator
                                                   ├─ approved → coach_agent
                                                   │               ├─ tool_calls → tool_node → coach_agent (루프)
                                                   │               └─ 응답완료 → [INTERRUPT] → evaluator
@@ -119,6 +139,7 @@ def create_coaching_graph_builder() -> StateGraph:
     workflow.add_node("intent_classifier", intent_classifier_node)
     workflow.add_node("emergency_response", emergency_response_node)
     workflow.add_node("goal_setter", goal_setter_node)
+    workflow.add_node("goal_setter_tool", ToolNode(coaching_tools)) # Goal Setter 전용 도구 노드
     workflow.add_node("goal_evaluator", goal_evaluator_node)
     workflow.add_node("coach_agent", coach_agent_node)
     workflow.add_node("tool_node", ToolNode(coaching_tools))
@@ -144,9 +165,18 @@ def create_coaching_graph_builder() -> StateGraph:
     # 2. 응급 상황 -> END
     workflow.add_edge("emergency_response", END)
     
-    # 3. Goal Setter -> Goal Evaluator (목표 수립 후 사용자 승인 대기)
-    #    interrupt_before=["goal_evaluator"]로 인해 여기서 중단됨
-    workflow.add_edge("goal_setter", "goal_evaluator")
+    # 3. Goal Setter -> 조건부 분기 (Tool 사용 or 완료)
+    workflow.add_conditional_edges(
+        "goal_setter",
+        route_goal_setter,
+        {
+            "goal_setter_tool": "goal_setter_tool",
+            "goal_evaluator": "goal_evaluator"
+        }
+    )
+    
+    # 3-1. Goal Setter Tool -> Goal Setter (결과 반환 후 루프)
+    workflow.add_edge("goal_setter_tool", "goal_setter")
     
     # 4. Goal Evaluator -> 조건부 분기
     #    - approved → coach_agent (코칭 시작)

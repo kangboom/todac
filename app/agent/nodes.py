@@ -189,9 +189,11 @@ async def goal_setter_node(state: AgentState) -> AgentState:
     Goal Setter 노드 (코칭 에이전트)
     사용자 발화에서 '해결하고 싶은 문제'를 추출하여 구체적인 목표와 단계를 수립.
     
-    [실행 단계 2-Step]
-    1. JSON 추출: LLM에게 Goal, Steps를 JSON으로 응답하도록 요청
-    2. 메시지 생성(스트리밍): 추출된 Goal, Steps를 바탕으로 사용자 안내 메시지를 스트리밍 생성
+    [실행 단계 및 도구 활용]
+    1. 검색 도구 활용: LLM이 필요하다고 판단하면 검색 도구 호출 (tool_calls)
+       -> ToolNode 실행 -> 다시 Goal Setter로 복귀 (Loop)
+    2. JSON 추출: 충분한 정보가 모이면 Goal, Steps를 JSON으로 응답
+    3. 메시지 생성(스트리밍): 추출된 Goal, Steps를 바탕으로 사용자 안내 메시지를 스트리밍 생성
     
     재설정 모드: _goal_feedback가 있으면 사용자 피드백을 반영하여 목표를 재수립.
     """
@@ -211,15 +213,53 @@ async def goal_setter_node(state: AgentState) -> AgentState:
         state["goal_status"] = "ready"
         return state
     
+    # 0. 도구 바인딩 (검색 허용)
+    tools = [milvus_knowledge_search, retrieve_qna] # 검색 도구들
+    llm_with_tools = llm.bind_tools(tools)
+
     try:
+        # 1. 문서 컨텍스트 구성 (이전 턴의 ToolMessage 결과가 있다면)
+        # (Coach Agent와 유사한 로직: ToolMessage -> RagDoc/QnADoc 변환 -> String)
+        retrieved_docs = []
+        qna_docs = []
+        
+        # 메시지 역순으로 탐색하여 가장 최근의 ToolMessage 그룹 찾기
+        # (단, 이번 턴의 검색 결과만 반영)
+        for msg in reversed(messages):
+            if isinstance(msg, HumanMessage):
+                break
+            if isinstance(msg, ToolMessage):
+                tool_name = getattr(msg, "name", "")
+                raw_data = getattr(msg, "artifact", None)
+                if raw_data:
+                    if tool_name == "milvus_knowledge_search":
+                        for d in raw_data:
+                            try: retrieved_docs.append(RagDoc(**d))
+                            except: pass
+                    elif tool_name == "retrieve_qna":
+                        for d in raw_data:
+                            try: qna_docs.append(QnADoc(**d))
+                            except: pass
+        
+        formatted_qna = format_qna_docs(qna_docs) if qna_docs else ""
+        rag_context = get_docs_context_string(retrieved_docs)
+        
+        docs_context = ""
+        if formatted_qna: docs_context += f"[QnA 정보]\n{formatted_qna}\n\n"
+        if rag_context: docs_context += f"[검색된 문서]\n{rag_context}\n\n"
+        if not docs_context: docs_context = "없음 (필요 시 검색 도구를 사용하세요)"
+
         baby_context = get_baby_context_string(baby_info)
         
-        # [Step 1] JSON 추출 (Goal + Steps)
+        # [Step 1] LLM 호출 (JSON 추출 or Tool Call)
         system_prompt = GOAL_SETTER_PROMPT_TEMPLATE.format(
-            baby_context=baby_context
+            baby_context=baby_context,
+            docs_context=docs_context
         )
         
         # 재설정 모드: 이전 계획과 사용자 피드백을 프롬프트에 포함
+        # (재설정 모드에서도 검색이 필요할까? -> 일단은 검색 없이 바로 수정하도록 유도하거나, 
+        #  필요하다면 검색도 가능하게 함. 여기선 재설정 프롬프트를 이어붙임)
         if goal_feedback and prev_goal:
             prev_steps_str = "\n".join([f"  {i+1}. {s}" for i, s in enumerate(prev_steps)]) if prev_steps else "없음"
             system_prompt += GOAL_SETTER_RESET_PROMPT_TEMPLATE.format(
@@ -233,11 +273,19 @@ async def goal_setter_node(state: AgentState) -> AgentState:
         recent_history = clean_messages[-5:] if len(clean_messages) > 5 else clean_messages
         recent_history = sanitize_messages_for_llm(recent_history)
         
-        # JSON 추출용 호출 (비스트리밍)
         input_messages = [SystemMessage(content=system_prompt)] + recent_history
-        response = await llm.ainvoke(input_messages)
-        response_text = response.content.strip()
         
+        # 1-1. LLM 호출 (With Tools)
+        response = await llm_with_tools.ainvoke(input_messages)
+        
+        # 1-2. Tool Call 확인
+        if response.tool_calls:
+            logger.info(f"🔧 Goal Setter 도구 호출: {[tc['name'] for tc in response.tool_calls]}")
+            state["messages"] = [response]
+            return state # ToolNode로 라우팅됨 (Graph에서 처리)
+
+        # 1-3. Tool Call 없음 -> JSON 파싱 (목표 수립 완료)
+        response_text = response.content.strip()
         result = parse_json_from_response(response_text)
         
         goal = result.get("goal", "")
@@ -250,7 +298,7 @@ async def goal_setter_node(state: AgentState) -> AgentState:
             state["messages"] = [AIMessage(content=state["response"])]
             return state
 
-        # [Step 2] 메시지 생성 (스트리밍)
+        # [Step 2] 안내 메시지 생성 (스트리밍) - Tools 바인딩 없이 순수 LLM 사용
         steps_str = "\n".join([f"{i+1}. {s}" for i, s in enumerate(steps)])
         
         message_prompt = GOAL_SETTER_MESSAGE_PROMPT_TEMPLATE.format(
@@ -259,9 +307,9 @@ async def goal_setter_node(state: AgentState) -> AgentState:
             steps_str=steps_str
         )
         
-        # 스트리밍 호출
+        # 스트리밍 호출 (순수 메시지 생성용)
         msg_response = await llm.ainvoke(
-            [SystemMessage(content=message_prompt)], # System prompt만으로 생성 (히스토리는 이미 반영됨)
+            [SystemMessage(content=message_prompt)], 
             config={"tags": ["stream_response"]}
         )
         
