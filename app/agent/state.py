@@ -17,6 +17,7 @@ class AgentState(TypedDict):
     session_id: uuid.UUID  # 세션 ID
     user_id: uuid.UUID  # 사용자 ID
     baby_info: Optional[Dict[str, Any]]  # 아기 프로필 정보 (교정 연령 포함)
+    user_current_info: Optional[str] # 사용자 현재 상황 (HITL 단계에서 수집)
     
     # 2. 대화 이력 (reducer 사용)
     messages: Annotated[List[BaseMessage], add_messages]  # 대화 이력 (BaseMessage 객체)
@@ -31,8 +32,7 @@ class AgentState(TypedDict):
     # Self-RAG 평가 관련
     _doc_relevance_score: Optional[float]  # 문서 관련성 점수 (0.0 ~ 1.0)
     _doc_relevance_passed: bool  # 문서 관련성 통과 여부 (라우팅용)
-    _missing_info: Optional[Dict[str, Any]]  # 부족한 정보 분석 결과 ({"missing_info": [...], "reason": "..."})
-    
+
     # 4. 출력 및 응답
     response: str # 최종 답변 텍스트
     
@@ -40,3 +40,8 @@ class AgentState(TypedDict):
     is_emergency: bool # 응급 상황 여부
     
     response_time: Optional[float] # 답변 생성 시간 (초)
+    
+    # 5. 코칭 상태 (Coaching Agent)
+    goal: Optional[str]  # 현재 진행 중인 코칭 목표 (예: "수유 자세 교정")
+    goal_options: Optional[List[str]]  # LLM이 생성한 목표 후보 리스트 (2~3개)
+    _goal_valid: Optional[bool]  # 목표 선택 유효 여부 (라우팅용)

@@ -24,6 +24,9 @@ langchain-community>=0.4.1  # LlamaParseLoader 포함
 langchain-text-splitters>=1.1.0  # Text splitter (MarkdownHeaderTextSplitter 등)
 
 langgraph>=0.0.39
+langgraph-checkpoint-postgres>=3.0.4
+psycopg[binary]>=3.3.2
+psycopg-pool>=3.3.0
 openai>=1.12.0
 
 # 유틸리티

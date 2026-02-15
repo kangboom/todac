@@ -10,7 +10,8 @@ from app.api.v1.admin import (
     knowledge as admin_knowledge,
     dashboard as admin_dashboard,
     qna as admin_qna,
-    feedback as admin_feedback
+    feedback as admin_feedback,
+    chat_history as admin_chat_history
 )
 from app.core.config import settings
 from app.core.database import Base, engine
@@ -123,3 +124,4 @@ app.include_router(admin_knowledge.router, prefix="/api/v1", tags=["admin"])
 app.include_router(admin_dashboard.router, prefix="/api/v1", tags=["admin"])
 app.include_router(admin_qna.router, prefix="/api/v1/admin/qna", tags=["admin-qna"]) # [추가]
 app.include_router(admin_feedback.router, prefix="/api/v1/admin/feedback", tags=["admin-feedback"])
+app.include_router(admin_chat_history.router, prefix="/api/v1/admin/chat-history", tags=["admin-chat-history"])
