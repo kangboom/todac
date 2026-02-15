@@ -17,6 +17,7 @@ class AgentState(TypedDict):
     session_id: uuid.UUID  # 세션 ID
     user_id: uuid.UUID  # 사용자 ID
     baby_info: Optional[Dict[str, Any]]  # 아기 프로필 정보 (교정 연령 포함)
+    user_current_info: Optional[str] # 사용자 현재 상황 (HITL 단계에서 수집)
     
     # 2. 대화 이력 (reducer 사용)
     messages: Annotated[List[BaseMessage], add_messages]  # 대화 이력 (BaseMessage 객체)
@@ -42,10 +43,5 @@ class AgentState(TypedDict):
     
     # 5. 코칭 상태 (Coaching Agent)
     goal: Optional[str]  # 현재 진행 중인 코칭 목표 (예: "수유 자세 교정")
-    coaching_steps: Optional[List[str]]  # 목표 달성을 위한 세부 단계 리스트
-    current_step_idx: int  # 현재 진행 중인 단계 인덱스 (0부터 시작)
-    goal_status: Optional[str]  # 목표 상태 플래그: 'ready' | 'in_progress' | 'completed' | 'paused'
-    
-    # 6. 목표 승인 (Goal Evaluator)
-    _goal_approved: Optional[bool]  # 사용자의 목표/계획 승인 여부
-    _goal_feedback: Optional[str]  # 목표 수정 시 사용자 피드백 (Goal Evaluator → Goal Setter)
+    goal_options: Optional[List[str]]  # LLM이 생성한 목표 후보 리스트 (2~3개)
+    _goal_valid: Optional[bool]  # 목표 선택 유효 여부 (라우팅용)

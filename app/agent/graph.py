@@ -3,27 +3,23 @@ Workflow 정의 (Coaching Agent - StateGraph, Edge 연결)
 """
 from langgraph.graph import StateGraph, END, START
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-from langgraph.prebuilt import ToolNode
 from psycopg_pool import AsyncConnectionPool
 from app.agent.state import AgentState
 from app.agent.nodes import (
     intent_classifier_node,
     emergency_response_node,
-    goal_setter_node,
-    goal_evaluator_node,
-    coach_agent_node,
-    coaching_evaluator_node,
-    closing_node,
+    ask_situation_node,
+    goal_options_node,
+    goal_selector_node,
+    research_agent_node,
+    evaluate_docs_node,
+    grow_response_node
 )
-from app.agent.tools import milvus_knowledge_search, retrieve_qna
 from app.core.config import settings
-from langchain_core.messages import AIMessage
+import asyncio
 import logging
 
 logger = logging.getLogger(__name__)
-
-# 코칭 에이전트에서 사용하는 도구 목록
-coaching_tools = [milvus_knowledge_search, retrieve_qna]
 
 
 def route_intent(state: AgentState) -> str:
@@ -31,7 +27,7 @@ def route_intent(state: AgentState) -> str:
     의도 분류 결과에 따른 라우팅
     - emergency: 응급 상황 패스트트랙
     - irrelevant: 단순 응답 후 종료 (이미 intent_classifier에서 응답 생성됨)
-    - relevant: 코칭 플로우 진입 (Goal Setter)
+    - relevant: 코칭 플로우 진입 (Ask Situation)
     """
     intent = state.get("_intent", "relevant")
     
@@ -43,108 +39,39 @@ def route_intent(state: AgentState) -> str:
         logger.info("🚫 질문이 아기 돌봄과 관련이 없습니다 -> 단순 응답 후 종료")
         return END
     
-    logger.info("✅ 질문이 관련성이 있습니다 -> Goal Setter 노드 진입")
-    return "goal_setter"
+    logger.info("✅ 질문이 관련성이 있습니다 -> Ask Situation 노드 진입")
+    return "ask_situation"
 
 
-def route_goal_evaluator(state: AgentState) -> str:
+def route_goal_selector(state: AgentState) -> str:
     """
-    Goal Evaluator 결과에 따른 라우팅
-    - approved: coach_agent로 진행 (코칭 시작)
-    - modify: goal_setter로 복귀 (사용자 피드백 반영하여 재설정)
+    Goal Selector 결과에 따른 라우팅
+    - _goal_valid == False: 관련 없는 응답 → self-loop (다시 목표 선택 대기)
+    - _goal_valid == True: 유효한 목표 → Research Agent 진입
     """
-    goal_approved = state.get("_goal_approved", True)
+    if state.get("_goal_valid") == False:
+        logger.info("🔄 목표 미설정 → goal_selector self-loop")
+        return "goal_selector"
     
-    if goal_approved:
-        logger.info("✅ 목표 승인 → Coach Agent 노드 진입")
-        return "coach_agent"
-    
-    logger.info("✏️ 목표 수정 요청 → Goal Setter 노드 재진입")
-    return "goal_setter"
-
-
-def route_coach_agent(state: AgentState) -> str:
-    """
-    Coach Agent 출력에 따른 라우팅
-    - tool_calls가 있으면 → tool_node (검색 도구 실행)
-    - tool_calls가 없으면 → evaluator (응답 완료, interrupt 후 사용자 대기)
-    """
-    messages = state.get("messages", [])
-    
-    if messages:
-        last_msg = messages[-1]
-        if isinstance(last_msg, AIMessage) and getattr(last_msg, "tool_calls", None):
-            logger.info("🔧 Coach Agent → ToolNode (검색 도구 실행)")
-            return "tool_node"
-    
-    logger.info("✅ Coach Agent → Evaluator (응답 완료)")
-    return "evaluator"
-
-
-def route_evaluator(state: AgentState) -> str:
-    """
-    Evaluator 결과에 따른 라우팅
-    - completed/paused → closing (마무리)
-    - 그 외 (다음 단계, 재시도, 잡담) → coach_agent (루프)
-    """
-    goal_status = state.get("goal_status", "in_progress")
-    
-    if goal_status in ("completed", "paused"):
-        logger.info(f"🏁 코칭 종료 -> Closing 노드 (status={goal_status})")
-        return "closing"
-    
-    logger.info("🔄 코칭 계속 -> Coach Agent 노드 (루프)")
-    return "coach_agent"
-
-
-def route_goal_setter(state: AgentState) -> str:
-    """
-    Goal Setter 출력에 따른 라우팅
-    - tool_calls가 있으면 → goal_setter_tool (검색 도구 실행)
-    - tool_calls가 없으면 → goal_evaluator (목표 수립 완료)
-    """
-    messages = state.get("messages", [])
-    
-    if messages:
-        last_msg = messages[-1]
-        if isinstance(last_msg, AIMessage) and getattr(last_msg, "tool_calls", None):
-            logger.info("🔧 Goal Setter → ToolNode (검색 도구 실행)")
-            return "goal_setter_tool"
-            
-    logger.info("✅ Goal Setter → Goal Evaluator (목표 수립 완료)")
-    return "goal_evaluator"
+    logger.info("✅ 목표 설정 완료 → research_agent 진입")
+    return "research_agent"
 
 
 def create_coaching_graph_builder() -> StateGraph:
     """
     코칭 에이전트 StateGraph 빌더 생성
-    
-    그래프 구조:
-    START → intent_classifier
-      ├─ emergency → emergency_response → END
-      ├─ irrelevant → END
-      └─ relevant → goal_setter
-                      ├─ tool_calls → goal_setter_tool → goal_setter (루프)
-                      └─ 완료 → [INTERRUPT] → goal_evaluator
-                                                  ├─ approved → coach_agent
-                                                  │               ├─ tool_calls → tool_node → coach_agent (루프)
-                                                  │               └─ 응답완료 → [INTERRUPT] → evaluator
-                                                  │                                           ├─ completed/paused → closing → END
-                                                  │                                           └─ 계속 → coach_agent (루프)
-                                                  └─ modify → goal_setter (루프, 피드백 반영하여 재설정)
     """
     workflow = StateGraph(AgentState)
     
     # ===== 노드 등록 =====
     workflow.add_node("intent_classifier", intent_classifier_node)
     workflow.add_node("emergency_response", emergency_response_node)
-    workflow.add_node("goal_setter", goal_setter_node)
-    workflow.add_node("goal_setter_tool", ToolNode(coaching_tools)) # Goal Setter 전용 도구 노드
-    workflow.add_node("goal_evaluator", goal_evaluator_node)
-    workflow.add_node("coach_agent", coach_agent_node)
-    workflow.add_node("tool_node", ToolNode(coaching_tools))
-    workflow.add_node("evaluator", coaching_evaluator_node)
-    workflow.add_node("closing", closing_node)
+    workflow.add_node("ask_situation", ask_situation_node)
+    workflow.add_node("goal_options", goal_options_node)
+    workflow.add_node("goal_selector", goal_selector_node)
+    workflow.add_node("research_agent", research_agent_node)
+    workflow.add_node("evaluate_docs", evaluate_docs_node)
+    workflow.add_node("response_node", grow_response_node)
     
     # ===== 엣지 연결 =====
     
@@ -156,7 +83,7 @@ def create_coaching_graph_builder() -> StateGraph:
         "intent_classifier",
         route_intent,
         {
-            "goal_setter": "goal_setter",
+            "ask_situation": "ask_situation",
             "emergency_response": "emergency_response",
             END: END
         }
@@ -165,58 +92,30 @@ def create_coaching_graph_builder() -> StateGraph:
     # 2. 응급 상황 -> END
     workflow.add_edge("emergency_response", END)
     
-    # 3. Goal Setter -> 조건부 분기 (Tool 사용 or 완료)
+    # 3. Ask Situation -> Goal Options (interrupt_before로 1차 멈춤)
+    workflow.add_edge("ask_situation", "goal_options")
+    
+    # 4. Goal Options -> Goal Selector (interrupt_before로 2차 멈춤)
+    workflow.add_edge("goal_options", "goal_selector")
+    
+    # 5. Goal Selector -> 조건부 분기 (관련 없는 응답이면 self-loop)
     workflow.add_conditional_edges(
-        "goal_setter",
-        route_goal_setter,
+        "goal_selector",
+        route_goal_selector,
         {
-            "goal_setter_tool": "goal_setter_tool",
-            "goal_evaluator": "goal_evaluator"
+            "goal_selector": "goal_selector",
+            "research_agent": "research_agent"
         }
     )
     
-    # 3-1. Goal Setter Tool -> Goal Setter (결과 반환 후 루프)
-    workflow.add_edge("goal_setter_tool", "goal_setter")
+    # 6. Research Agent -> Evaluate Docs
+    workflow.add_edge("research_agent", "evaluate_docs")
     
-    # 4. Goal Evaluator -> 조건부 분기
-    #    - approved → coach_agent (코칭 시작)
-    #    - modify → goal_setter (피드백 반영 재설정, 루프)
-    workflow.add_conditional_edges(
-        "goal_evaluator",
-        route_goal_evaluator,
-        {
-            "coach_agent": "coach_agent",
-            "goal_setter": "goal_setter"
-        }
-    )
+    # 7. Evaluate Docs -> Response Node
+    workflow.add_edge("evaluate_docs", "response_node")
     
-    # 5. Coach Agent -> 조건부 분기
-    #    - tool_calls 있음 → tool_node (검색 도구 실행)
-    #    - tool_calls 없음 → evaluator (응답 완료, interrupt 후 사용자 대기)
-    workflow.add_conditional_edges(
-        "coach_agent",
-        route_coach_agent,
-        {
-            "tool_node": "tool_node",
-            "evaluator": "evaluator"
-        }
-    )
-    
-    # 6. ToolNode -> Coach Agent (검색 결과 반환 후 재호출)
-    workflow.add_edge("tool_node", "coach_agent")
-    
-    # 7. Evaluator -> 조건부 분기
-    workflow.add_conditional_edges(
-        "evaluator",
-        route_evaluator,
-        {
-            "coach_agent": "coach_agent",
-            "closing": "closing"
-        }
-    )
-    
-    # 8. Closing -> END
-    workflow.add_edge("closing", END)
+    # 8. Response Node -> END
+    workflow.add_edge("response_node", END)
     
     return workflow
 
@@ -224,21 +123,29 @@ def create_coaching_graph_builder() -> StateGraph:
 # 전역 그래프 인스턴스 (한 번만 생성)
 _agent_graph = None
 _checkpointer = None
+_graph_lock = asyncio.Lock()
 
 
 async def get_agent_graph():
     """
-    에이전트 그래프 인스턴스 가져오기 (싱글톤, async)
-    AsyncPostgresSaver를 체크포인터로 사용하며,
-    2개의 interrupt 포인트에서 HITL(Human-in-the-Loop)을 구현합니다.
+    에이전트 그래프 인스턴스 가져오기 (싱글톤, async + Lock)
     
     interrupt 위치:
-    1. goal_setter → goal_evaluator 사이 (목표/계획 사용자 승인 대기)
-    2. coach_agent → evaluator 사이 (코칭 가이드 후 사용자 응답 대기)
+    - goal_options 노드 진입 전: Ask Situation이 질문을 던진 후, 사용자의 상황 답변을 받기 위해 멈춤.
+    - goal_selector 노드 진입 전: Goal Options가 선택지를 던진 후, 사용자의 목표 선택을 받기 위해 멈춤.
     """
     global _agent_graph, _checkpointer
     
-    if _agent_graph is None:
+    # Fast path: 이미 초기화된 경우 Lock 없이 바로 반환
+    if _agent_graph is not None:
+        return _agent_graph
+    
+    # 초기화 시에만 Lock 획득 (동시 초기화 방지)
+    async with _graph_lock:
+        # Double-check: Lock 대기 중 다른 코루틴이 이미 초기화했을 수 있음
+        if _agent_graph is not None:
+            return _agent_graph
+        
         db_uri = settings.DATABASE_URL
         
         pool = AsyncConnectionPool(
@@ -257,9 +164,9 @@ async def get_agent_graph():
         
         _agent_graph = builder.compile(
             checkpointer=_checkpointer,
-            interrupt_before=["goal_evaluator", "evaluator"]  # 2개의 HITL 포인트
+            interrupt_before=["goal_options", "goal_selector"]
         )
         
-        logger.info("✅ 코칭 에이전트 그래프 컴파일 완료 (interrupt_before=['goal_evaluator', 'evaluator'])")
+        logger.info("✅ 코칭 그래프 컴파일 완료 (interrupt_before=['goal_options', 'goal_selector'])")
     
     return _agent_graph

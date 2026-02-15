@@ -4,26 +4,17 @@
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, AIMessage
 from app.agent.state import AgentState
 from app.agent.prompts import (
-    DOC_RELEVANCE_PROMPT_TEMPLATE, 
-    RESPONSE_GENERATION_PROMPT_TEMPLATE,
-    AGENT_NODE_PROMPT_TEMPLATE,
-    get_baby_context_string,
-    get_docs_context_string,
     SIMPLE_RESPONSE_PROMPT_TEMPLATE,
     INTENT_CLASSIFICATION_PROMPT_TEMPLATE,
-    ASK_FOR_INFO_PROMPT_TEMPLATE,
     EMERGENCY_RESPONSE_PROMPT_TEMPLATE,
-    # 코칭 에이전트 프롬프트
-    GOAL_SETTER_PROMPT_TEMPLATE,
-    GOAL_SETTER_RESET_PROMPT_TEMPLATE,
-    GOAL_SETTER_MESSAGE_PROMPT_TEMPLATE,
-    GOAL_EVALUATOR_SYSTEM_PROMPT,
-    GOAL_EVALUATOR_PROMPT_TEMPLATE,
-    COACH_AGENT_PROMPT_TEMPLATE,
-    COACH_TOOL_CALL_PROMPT_TEMPLATE,
-    EVALUATOR_PROMPT_TEMPLATE,
-    COACHING_EVALUATOR_SYSTEM_PROMPT,
-    CLOSING_PROMPT_TEMPLATE,
+    ASK_SITUATION_PROMPT_TEMPLATE,
+    GOAL_OPTIONS_PROMPT_TEMPLATE,
+    GROW_RESPONSE_PROMPT_TEMPLATE,
+    RESEARCH_AGENT_PROMPT_TEMPLATE,
+    EVALUATE_DOCS_PROMPT_TEMPLATE,
+    PARSE_GOAL_SELECTION_PROMPT,
+    get_baby_context_string,
+    get_docs_context_string,
 )
 from app.agent.tools import milvus_knowledge_search, retrieve_qna
 from app.services.qna_service import format_qna_docs
@@ -183,568 +174,461 @@ async def emergency_response_node(state: AgentState) -> AgentState:
     return state
 
 
-@track_node_execution_time("goal_setter")
-async def goal_setter_node(state: AgentState) -> AgentState:
+@track_node_execution_time("ask_situation")
+async def ask_situation_node(state: AgentState) -> AgentState:
     """
-    Goal Setter 노드 (코칭 에이전트)
-    사용자 발화에서 '해결하고 싶은 문제'를 추출하여 구체적인 목표와 단계를 수립.
-    
-    [실행 단계 및 도구 활용]
-    1. 검색 도구 활용: LLM이 필요하다고 판단하면 검색 도구 호출 (tool_calls)
-       -> ToolNode 실행 -> 다시 Goal Setter로 복귀 (Loop)
-    2. JSON 추출: 충분한 정보가 모이면 Goal, Steps를 JSON으로 응답
-    3. 메시지 생성(스트리밍): 추출된 Goal, Steps를 바탕으로 사용자 안내 메시지를 스트리밍 생성
-    
-    재설정 모드: _goal_feedback가 있으면 사용자 피드백을 반영하여 목표를 재수립.
+    Ask Situation 노드 (1단계: 현재 상황 질문)
+    - 사용자의 질문을 바탕으로, 현재 상황을 파악하는 공감형 질문을 생성합니다.
+    - 이 노드의 출력이 스트리밍되어 사용자에게 전달됩니다.
+    - 이후 interrupt로 사용자의 상황 답변을 기다립니다.
     """
-    logger.info("===== 🎯 Goal Setter 노드 실행 =====")
+    logger.info("===== 🗣️ Ask Situation 노드 실행 =====")
+    
+    question = state.get("question", "")
+    baby_info = state.get("baby_info", {})
+    
+    llm = get_generator_llm()
+    if not llm:
+        default_msg = "더 정확한 도움을 드리기 위해, 현재 아기의 상태나 상황을 조금 더 자세히 말씀해 주시겠어요?"
+        state["response"] = default_msg
+        state["messages"] = [AIMessage(content=default_msg)]
+        return state
+
+    try:
+        baby_context = get_baby_context_string(baby_info)
+        
+        system_prompt = ASK_SITUATION_PROMPT_TEMPLATE.format(
+            question=question,
+            baby_context=baby_context
+        )
+        
+        messages = state.get("messages", [])
+        recent_history = messages[-3:] if len(messages) > 3 else messages
+        
+        response = await llm.ainvoke(
+            [SystemMessage(content=system_prompt)] + recent_history,
+            config={"tags": ["stream_response"]}
+        )
+        
+        state["response"] = response.content.strip()
+        state["messages"] = [response]
+        
+        logger.info(f"✅ 상황 질문 생성 완료: {state['response'][:30]}...")
+        
+    except Exception as e:
+        logger.error(f"Ask Situation 생성 실패: {str(e)}", exc_info=True)
+        fallback_msg = "더 정확한 조언을 위해 현재 아기 상태를 자세히 알려주시겠어요?"
+        state["response"] = fallback_msg
+        state["messages"] = [AIMessage(content=fallback_msg)]
+    
+    return state
+
+
+@track_node_execution_time("goal_options")
+async def goal_options_node(state: AgentState) -> AgentState:
+    """
+    Goal Options 노드 (2단계: 목표 선택지 제시)
+    - interrupt로 받은 사용자의 상황 답변을 활용하여
+    - 최초 질문 + 상황 답변을 기반으로 2~3개 목표 선택지를 생성합니다.
+    - 이 노드의 출력이 스트리밍되어 사용자에게 전달됩니다.
+    - 이후 interrupt로 사용자의 목표 선택을 기다립니다.
+    """
+    logger.info("===== 🎯 Goal Options 노드 실행 =====")
     
     question = state.get("question", "")
     baby_info = state.get("baby_info", {})
     messages = state.get("messages", [])
-    goal_feedback = state.get("_goal_feedback", "")
-    prev_goal = state.get("goal", "")
-    prev_steps = state.get("coaching_steps", [])
     
-    llm = get_generator_llm()
-    if not llm:
-        logger.error("LLM 클라이언트가 없어 목표 설정을 수행할 수 없습니다.")
-        state["response"] = "죄송합니다. 현재 코칭을 시작할 수 없습니다. 잠시 후 다시 시도해주세요."
-        state["goal_status"] = "ready"
-        return state
-    
-    # 0. 도구 바인딩 (검색 허용)
-    tools = [milvus_knowledge_search, retrieve_qna] # 검색 도구들
-    llm_with_tools = llm.bind_tools(tools)
-
-    try:
-        # 1. 문서 컨텍스트 구성 (이전 턴의 ToolMessage 결과가 있다면)
-        # (Coach Agent와 유사한 로직: ToolMessage -> RagDoc/QnADoc 변환 -> String)
-        retrieved_docs = []
-        qna_docs = []
-        
-        # 메시지 역순으로 탐색하여 가장 최근의 ToolMessage 그룹 찾기
-        # (단, 이번 턴의 검색 결과만 반영)
-        for msg in reversed(messages):
-            if isinstance(msg, HumanMessage):
-                break
-            if isinstance(msg, ToolMessage):
-                tool_name = getattr(msg, "name", "")
-                raw_data = getattr(msg, "artifact", None)
-                if raw_data:
-                    if tool_name == "milvus_knowledge_search":
-                        for d in raw_data:
-                            try: retrieved_docs.append(RagDoc(**d))
-                            except: pass
-                    elif tool_name == "retrieve_qna":
-                        for d in raw_data:
-                            try: qna_docs.append(QnADoc(**d))
-                            except: pass
-        
-        formatted_qna = format_qna_docs(qna_docs) if qna_docs else ""
-        rag_context = get_docs_context_string(retrieved_docs)
-        
-        docs_context = ""
-        if formatted_qna: docs_context += f"[QnA 정보]\n{formatted_qna}\n\n"
-        if rag_context: docs_context += f"[검색된 문서]\n{rag_context}\n\n"
-        if not docs_context: docs_context = "없음 (필요 시 검색 도구를 사용하세요)"
-
-        baby_context = get_baby_context_string(baby_info)
-        
-        # [Step 1] LLM 호출 (JSON 추출 or Tool Call)
-        system_prompt = GOAL_SETTER_PROMPT_TEMPLATE.format(
-            baby_context=baby_context,
-            docs_context=docs_context
-        )
-        
-        # 재설정 모드: 이전 계획과 사용자 피드백을 프롬프트에 포함
-        # (재설정 모드에서도 검색이 필요할까? -> 일단은 검색 없이 바로 수정하도록 유도하거나, 
-        #  필요하다면 검색도 가능하게 함. 여기선 재설정 프롬프트를 이어붙임)
-        if goal_feedback and prev_goal:
-            prev_steps_str = "\n".join([f"  {i+1}. {s}" for i, s in enumerate(prev_steps)]) if prev_steps else "없음"
-            system_prompt += GOAL_SETTER_RESET_PROMPT_TEMPLATE.format(
-                prev_goal=prev_goal,
-                prev_steps_str=prev_steps_str,
-                goal_feedback=goal_feedback
-            )
-            logger.info(f"🔄 목표 재설정 모드 (피드백: {goal_feedback[:50]}...)")
-        
-        clean_messages = get_clean_messages_for_generation(messages)
-        recent_history = clean_messages[-5:] if len(clean_messages) > 5 else clean_messages
-        recent_history = sanitize_messages_for_llm(recent_history)
-        
-        input_messages = [SystemMessage(content=system_prompt)] + recent_history
-        
-        # 1-1. LLM 호출 (With Tools)
-        response = await llm_with_tools.ainvoke(input_messages)
-        
-        # 1-2. Tool Call 확인
-        if response.tool_calls:
-            logger.info(f"🔧 Goal Setter 도구 호출: {[tc['name'] for tc in response.tool_calls]}")
-            state["messages"] = [response]
-            return state # ToolNode로 라우팅됨 (Graph에서 처리)
-
-        # 1-3. Tool Call 없음 -> JSON 파싱 (목표 수립 완료)
-        response_text = response.content.strip()
-        result = parse_json_from_response(response_text)
-        
-        goal = result.get("goal", "")
-        steps = result.get("steps", [])
-        
-        if not goal or not steps:
-            logger.warning("⚠️ 목표/단계 추출 실패, 기본 응답 반환")
-            state["response"] = "죄송합니다. 코칭 목표를 설정하는데 어려움이 있었습니다. 어떤 부분이 걱정되시는지 좀 더 자세히 말씀해주시겠어요?"
-            state["goal_status"] = "ready"
-            state["messages"] = [AIMessage(content=state["response"])]
-            return state
-
-        # [Step 2] 안내 메시지 생성 (스트리밍) - Tools 바인딩 없이 순수 LLM 사용
-        steps_str = "\n".join([f"{i+1}. {s}" for i, s in enumerate(steps)])
-        
-        message_prompt = GOAL_SETTER_MESSAGE_PROMPT_TEMPLATE.format(
-            baby_context=baby_context,
-            goal=goal,
-            steps_str=steps_str
-        )
-        
-        # 스트리밍 호출 (순수 메시지 생성용)
-        msg_response = await llm.ainvoke(
-            [SystemMessage(content=message_prompt)], 
-            config={"tags": ["stream_response"]}
-        )
-        
-        message = msg_response.content.strip()
-        
-        state["goal"] = goal
-        state["coaching_steps"] = steps
-        state["current_step_idx"] = 0
-        state["goal_status"] = "in_progress"
-        state["_goal_feedback"] = None  # 피드백 초기화
-        state["_goal_approved"] = None  # 승인 상태 초기화
-        state["response"] = message
-        state["messages"] = [msg_response]
-        
-        logger.info(f"✅ 목표 설정 완료: {goal}")
-        logger.info(f"✅ 단계 수립: {len(steps)}개 단계")
-        logger.info("✅ 안내 메시지 생성 완료 (스트리밍)")
-
-    except Exception as e:
-        logger.error(f"목표 설정 실패: {str(e)}", exc_info=True)
-        state["response"] = "죄송합니다. 코칭 준비 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
-        state["goal_status"] = "ready"
-        state["messages"] = [AIMessage(content=state["response"])]
-    
-    return state
-
-
-@track_node_execution_time("goal_evaluator")
-async def goal_evaluator_node(state: AgentState) -> AgentState:
-    """
-    Goal Evaluator 노드 (코칭 에이전트)
-    Goal Setter가 수립한 목표/계획에 대한 사용자의 승인 여부를 판단.
-    
-    - approved: coach_agent로 진행 (코칭 시작)
-    - modify: goal_setter로 복귀 (사용자 피드백 반영하여 재설정)
-    """
-    logger.info("===== ✅ Goal Evaluator 노드 실행 =====")
-    
-    messages = state.get("messages", [])
-    goal = state.get("goal", "")
-    coaching_steps = state.get("coaching_steps", [])
-    
-    # 사용자의 최신 메시지 추출
-    user_message = ""
+    # 1. 사용자 상황 답변 수집 (interrupt 이후 마지막 HumanMessage)
+    user_situation = ""
     for msg in reversed(messages):
         if isinstance(msg, HumanMessage):
-            user_message = msg.content
+            user_situation = msg.content
             break
     
-    if not user_message:
-        logger.warning("⚠️ 사용자 메시지를 찾을 수 없습니다. 기본값(approved) 처리")
-        state["_goal_approved"] = True
-        return state
+    # user_current_info에도 저장 (이후 단계에서 활용)
+    state["user_current_info"] = user_situation
+    logger.info(f"📝 사용자 상황 답변: {user_situation[:50]}...")
     
-    llm = get_evaluator_llm()
+    llm = get_generator_llm()
     if not llm:
-        logger.warning("⚠️ 평가 모델이 없어 기본값(approved)으로 처리합니다.")
-        state["_goal_approved"] = True
+        default_msg = "어떤 부분을 가장 먼저 도와드릴까요?\n1. 현재 상황 개선하기\n2. 관련 정보 알아보기"
+        state["response"] = default_msg
+        state["messages"] = [AIMessage(content=default_msg)]
+        state["goal_options"] = ["현재 상황 개선하기", "관련 정보 알아보기"]
         return state
-    
+
     try:
-        all_steps = "\n".join([f"  {i+1}. {s}" for i, s in enumerate(coaching_steps)])
+        baby_context = get_baby_context_string(baby_info)
         
-        eval_prompt = GOAL_EVALUATOR_PROMPT_TEMPLATE.format(
-            goal=goal,
-            all_steps=all_steps,
-            user_message=user_message
+        system_prompt = GOAL_OPTIONS_PROMPT_TEMPLATE.format(
+            question=question,
+            user_situation=user_situation,
+            baby_context=baby_context
         )
         
-        eval_messages = [
-            SystemMessage(content=GOAL_EVALUATOR_SYSTEM_PROMPT),
-            HumanMessage(content=eval_prompt)
-        ]
+        response = await llm.ainvoke(
+            [SystemMessage(content=system_prompt)]
+        )
         
-        response = await llm.ainvoke(eval_messages)
-        response_text = response.content.strip()
+        result = parse_json_from_response(response.content.strip())
         
-        result = parse_json_from_response(response_text)
+        empathy = result.get("empathy", "")
+        options = result.get("options", [])
+        closing = result.get("closing", "어떤 걸 먼저 도와드릴까요?")
         
-        decision = result.get("decision", "approved")
-        reason = result.get("reason", "")
-        feedback = result.get("feedback", "")
+        # 선택지를 state에 저장
+        state["goal_options"] = options
         
-        logger.info(f"✅ Goal Evaluator 판단: {decision} (이유: {reason})")
+        # 사용자에게 보여줄 메시지 구성
+        display_msg = empathy + "\n\n"
+        display_msg += "지금 가장 해결해주고 싶은 게 어떤 건가요?\n\n"
+        for i, option in enumerate(options, 1):
+            display_msg += f"{i}. {option}\n"
+        display_msg += f"\n{closing}"
         
-        if decision == "approved":
-            state["_goal_approved"] = True
-            logger.info("👍 목표 승인 → Coach Agent로 진행")
-        else:
-            state["_goal_approved"] = False
-            state["_goal_feedback"] = feedback or user_message
-            logger.info(f"✏️ 목표 수정 요청 → Goal Setter로 복귀 (피드백: {feedback[:50]}...)")
+        # 스트리밍 응답으로 전달
+        ai_msg = AIMessage(content=display_msg)
+        state["response"] = display_msg
+        state["messages"] = [ai_msg]
+        
+        logger.info(f"✅ 목표 선택지 {len(options)}개 생성 완료")
         
     except Exception as e:
-        logger.error(f"Goal Evaluator 실행 실패: {str(e)}", exc_info=True)
-        # 실패 시 기본적으로 approved
-        state["_goal_approved"] = True
-        logger.info("⚠️ 평가 실패, 기본값(approved)으로 Coach Agent 진행")
+        logger.error(f"Goal Options 생성 실패: {str(e)}", exc_info=True)
+        fallback_options = ["현재 상황 개선 방법 알아보기", "관련 정보 자세히 알아보기"]
+        fallback_msg = "어떤 부분이 가장 궁금하세요?\n\n1. 현재 상황 개선 방법 알아보기\n2. 관련 정보 자세히 알아보기\n\n번호로 골라주시거나, 원하시는 게 따로 있으면 직접 적어주셔도 돼요 😊"
+        state["response"] = fallback_msg
+        state["messages"] = [AIMessage(content=fallback_msg)]
+        state["goal_options"] = fallback_options
     
     return state
 
 
-
-@track_node_execution_time("coach_agent")
-async def coach_agent_node(state: AgentState) -> AgentState:
+@track_node_execution_time("goal_selector")
+async def goal_selector_node(state: AgentState) -> AgentState:
     """
-    Coach Agent 노드 (코칭 에이전트)
-    
-    2가지 모드:
-    1) Tool 호출 모드: LLM이 tool_calls를 반환 → ToolNode로 라우팅
-    2) 응답 생성 모드: ToolMessage(검색 결과)를 문서 컨텍스트로 조합 → 최종 가이드 스트리밍
-    
-    이 노드 실행 후 (응답 생성 완료 시) interrupt되어 사용자 입력을 대기합니다.
+    Goal Selector 노드 (목표 선택 파싱)
+    - interrupt 이후 사용자의 응답을 분석하여 목표를 설정합니다.
+    - Evaluator LLM을 사용하여 번호 선택, 복수 선택, 커스텀 목표를 정확하게 파싱합니다.
     """
-    logger.info("===== 🏋️ Coach Agent 노드 실행 =====")
+    logger.info("===== 🎯 Goal Selector 노드 실행 =====")
     
-    goal = state.get("goal", "")
-    coaching_steps = state.get("coaching_steps", [])
-    current_step_idx = state.get("current_step_idx", 0)
-    baby_info = state.get("baby_info", {})
     messages = state.get("messages", [])
+    goal_options = state.get("goal_options", [])
+    question = state.get("question", "")
     
-    if not coaching_steps or current_step_idx >= len(coaching_steps):
-        logger.warning("⚠️ 유효한 코칭 단계가 없습니다.")
-        state["response"] = "코칭 세션에 문제가 발생했습니다."
-        state["goal_status"] = "completed"
-        return state
-    
-    current_step = coaching_steps[current_step_idx]
-    
-    llm = get_generator_llm()
-    if not llm:
-        state["response"] = "죄송합니다. 현재 가이드를 제공할 수 없습니다."
-        return state
-    
-    # ===== ToolMessage 처리: 이전 Tool 실행 결과에서 문서 추출 =====
-    has_tool_results = False
-    new_retrieved_docs = []
-    new_qna_docs = []
-    
+    # 1. 사용자의 목표 선택 수집 (두 번째 interrupt 이후 마지막 HumanMessage)
+    last_human_msg = ""
     for msg in reversed(messages):
         if isinstance(msg, HumanMessage):
-            break  # 현재 턴의 사용자 메시지 이전까지만 확인
-        if isinstance(msg, AIMessage):
-            continue
-        if isinstance(msg, ToolMessage):
-            has_tool_results = True
-            tool_name = getattr(msg, "name", "")
-            raw_data = getattr(msg, "artifact", None)
-            if not raw_data:
-                continue
-            
-            logger.info(f"🔍 ToolMessage Artifact 추출: {tool_name}")
-            if tool_name == "milvus_knowledge_search":
-                for d in raw_data:
-                    try:
-                        new_retrieved_docs.append(RagDoc(**d))
-                    except Exception as e:
-                        logger.error(f"RagDoc 변환 실패: {e}")
-            elif tool_name == "retrieve_qna":
-                for d in raw_data:
-                    try:
-                        new_qna_docs.append(QnADoc(**d))
-                    except Exception as e:
-                        logger.error(f"QnADoc 변환 실패: {e}")
+            last_human_msg = msg.content
+            break
     
-    if new_retrieved_docs:
-        state["_retrieved_docs"] = new_retrieved_docs
-        logger.info(f"✅ RAG 문서 State 업데이트: {len(new_retrieved_docs)}개")
-    if new_qna_docs:
-        state["_qna_docs"] = new_qna_docs
-        logger.info(f"✅ QnA 문서 State 업데이트: {len(new_qna_docs)}개")
+    # 2. Evaluator LLM으로 최종 goal 결정
+    selected_goal = last_human_msg  # 기본값: 원문 그대로
+    is_relevant = True
     
-    # ===== 모드 결정 =====
-    if not has_tool_results:
-        # ---- 모드 1: Tool 호출 모드 (LLM에게 검색 도구를 제공) ----
-        logger.info("📡 Tool 호출 모드: LLM이 검색 도구 사용 여부를 결정합니다.")
+    if goal_options and last_human_msg:
+        try:
+            eval_llm = get_evaluator_llm()
+            if eval_llm:
+                options_text = "\n".join(f"{i+1}. {opt}" for i, opt in enumerate(goal_options))
+                
+                parse_prompt = PARSE_GOAL_SELECTION_PROMPT.format(
+                    options_text=options_text,
+                    user_response=last_human_msg
+                )
+                
+                parse_response = await eval_llm.ainvoke([SystemMessage(content=parse_prompt)])
+                parse_result = parse_json_from_response(parse_response.content.strip())
+                
+                is_relevant = parse_result.get("is_relevant", True)
+                parsed_goal = parse_result.get("goal")
+                
+                if is_relevant and parsed_goal:
+                    selected_goal = parsed_goal
+                    logger.info(f"🎯 LLM 파싱 결과: {selected_goal}")
+                elif not is_relevant:
+                    logger.info(f"🚫 관련 없는 응답 감지: {last_human_msg[:30]}...")
+                else:
+                    logger.warning("⚠️ 목표 파싱 결과 없음, 원문 사용")
+            else:
+                logger.warning("⚠️ Evaluator LLM 없음, 원문 사용")
+        except Exception as parse_err:
+            logger.error(f"목표 선택 파싱 실패 (원문 사용): {parse_err}")
+    
+    # 3. 관련 없는 응답인 경우 → 되묻기
+    if not is_relevant:
+        retry_msg = "죄송하지만 지금은 목표를 설정하는 단계예요 😊\n\n"
+        # 기존 선택지 다시 보여주기
+        for i, opt in enumerate(goal_options, 1):
+            retry_msg += f"{i}. {opt}\n"
+        retry_msg += "\n번호로 골라주시거나, 원하시는 목표를 직접 적어주세요!"
         
-        tools = [milvus_knowledge_search, retrieve_qna]
-        model_with_tools = llm.bind_tools(tools)
-        
-        baby_context = get_baby_context_string(baby_info)
-        all_steps = "\n".join([f"  {i+1}. {s}" for i, s in enumerate(coaching_steps)])
-        
-        tool_prompt = COACH_TOOL_CALL_PROMPT_TEMPLATE.format(
-            baby_context=baby_context,
-            goal=goal,
-            all_steps=all_steps,
-            current_step=current_step,
-            step_number=current_step_idx + 1,
-            total_steps=len(coaching_steps)
-        )
-
-        clean_messages = get_clean_messages_for_generation(messages)
-        recent_history = clean_messages[-5:] if len(clean_messages) > 5 else clean_messages
-        recent_history = sanitize_messages_for_llm(recent_history)
-        tool_messages = [SystemMessage(content=tool_prompt)] + recent_history
-        
-        response = await model_with_tools.ainvoke(tool_messages)
-        state["messages"] = [response]
-        
-        # tool_calls가 있으면 ToolNode가 처리, 없으면 바로 응답 생성 모드로 전환
-        if response.tool_calls:
-            logger.info(f"🔧 Tool 호출 요청: {[tc['name'] for tc in response.tool_calls]}")
-        else:
-            logger.info("ℹ️ LLM이 Tool 호출 없이 응답 → 바로 응답 생성 모드로 전환")
-        
+        state["response"] = retry_msg
+        state["messages"] = [AIMessage(content=retry_msg)]
+        state["_goal_valid"] = False
+        logger.info("🔄 목표 재선택 요청 (goal_selector self-loop)")
         return state
     
-    # ---- 모드 2: 응답 생성 모드 (Tool 결과를 활용하여 가이드 생성) ----
-    logger.info("📝 응답 생성 모드: Tool 결과를 활용하여 코칭 가이드를 작성합니다.")
+    state["goal"] = selected_goal
+    state["_goal_valid"] = True
+    logger.info(f"✅ 최종 설정 목표: {selected_goal}")
     
-    # 문서 컨텍스트 구성
+    # user_current_info가 없으면 question 사용
+    if not state.get("user_current_info"):
+        state["user_current_info"] = question
+    
+    return state
+
+
+@track_node_execution_time("research_agent")
+async def research_agent_node(state: AgentState) -> AgentState:
+    """
+    Research Agent 노드 (Tool Binding 적용)
+    - goal_selector_node에서 설정된 목표를 바탕으로
+    - LLM이 필요한 도구(QnA, Milvus)를 선택하고 실행합니다.
+    """
+    logger.info("===== 🕵️ Research Agent 노드 실행 =====")
+    
+    question = state.get("question", "")
+    baby_info = state.get("baby_info", {})
+    user_current_info = state.get("user_current_info", question)
+    goal = state.get("goal", "")
+    
+    # 2. LLM + Tool Binding
+    llm = get_generator_llm()
+    if not llm:
+        logger.error("LLM not found")
+        return state
+
+    # 사용할 도구 리스트
+    tools = [retrieve_qna, milvus_knowledge_search]
+    llm_with_tools = llm.bind_tools(tools)
+    
+    baby_context = get_baby_context_string(baby_info)
+    
+    # 프롬프트 구성
+    system_prompt = RESEARCH_AGENT_PROMPT_TEMPLATE.format(
+        baby_context=baby_context,
+        question=question,
+        user_current_info=user_current_info,
+        goal=goal,
+    )
+    
+    try:
+        # LLM 호출
+        response = await llm_with_tools.ainvoke(
+            [SystemMessage(content=system_prompt)],
+            config={"tags": ["tool_selection"]}
+        )
+        
+        qna_docs = []
+        rag_docs = []
+        
+        # 3. 도구 실행 (Manual Execution to capture artifacts)
+        if response.tool_calls:
+            logger.info(f"🛠️ 도구 호출 감지: {len(response.tool_calls)}개")
+            
+            for tool_call in response.tool_calls:
+                name = tool_call["name"]
+                args = tool_call["args"]
+                logger.info(f"  -> Executing {name} with args: {args}")
+                
+                try:
+                    if name == "retrieve_qna":
+                        # .func()를 사용하여 content와 artifacts(metadata)를 모두 가져옴
+                        content, artifacts = retrieve_qna.func(**args)
+                        if artifacts:
+                            for d in artifacts:
+                                qna_docs.append(QnADoc(**d))
+                                
+                    elif name == "milvus_knowledge_search":
+                        content, artifacts = milvus_knowledge_search.func(**args)
+                        if artifacts:
+                            for d in artifacts:
+                                rag_docs.append(RagDoc(**d))
+                except Exception as tool_err:
+                    logger.error(f"❌ 도구 실행 실패 ({name}): {tool_err}")
+                    
+        else:
+            logger.info("⚠️ 도구 호출 없음: LLM이 검색이 필요없다고 판단하거나 실패함.")
+            
+        # 결과 저장
+        state["_qna_docs"] = qna_docs
+        state["_retrieved_docs"] = rag_docs
+        logger.info(f"✅ Research 완료: QnA {len(qna_docs)}개, Docs {len(rag_docs)}개")
+        
+    except Exception as e:
+        logger.error(f"Research Agent 실패: {e}", exc_info=True)
+        
+    return state
+
+
+@track_node_execution_time("evaluate_docs")
+async def evaluate_docs_node(state: AgentState) -> AgentState:
+    """
+    Evaluate Docs 노드
+    - 검색된 문서들을 LLM으로 평가하여, 관련 있는 문서의 인덱스만 선별합니다.
+    - 선별된 인덱스에 해당하는 원본 문서만 state에 남깁니다.
+    """
+    logger.info("===== 🧐 Evaluate Docs 노드 실행 =====")
+    
+    question = state.get("question", "")
+    goal = state.get("goal", "")
+    user_current_info = state.get("user_current_info", "")
+    baby_info = state.get("baby_info", {})
+    
     rag_docs = state.get("_retrieved_docs", [])
     qna_docs = state.get("_qna_docs", [])
     
+    # 1. 문서가 하나도 없으면 바로 통과
+    if not rag_docs and not qna_docs:
+        logger.info("ℹ️ 검색된 문서 없음 -> 평가 생략")
+        return state
+
+    llm = get_evaluator_llm()
+    if not llm:
+        logger.warning("평가 모델 없음 -> 모든 문서 그대로 사용")
+        return state
+
+    try:
+        baby_context = get_baby_context_string(baby_info)
+        
+        # 2. QnA 문서 목록 텍스트 생성 (번호 포함)
+        qna_docs_list = "없음"
+        if qna_docs:
+            lines = []
+            for i, doc in enumerate(qna_docs):
+                q = doc.get("question", "") if isinstance(doc, dict) else getattr(doc, "question", "")
+                a = doc.get("answer", "") if isinstance(doc, dict) else getattr(doc, "answer", "")
+                lines.append(f"[{i}] Q: {q}\n    A: {a[:200]}...")
+            qna_docs_list = "\n".join(lines)
+        
+        # 3. RAG 문서 목록 텍스트 생성 (번호 포함)
+        rag_docs_list = "없음"
+        if rag_docs:
+            lines = []
+            for i, doc in enumerate(rag_docs):
+                content = doc.get("content", "") if isinstance(doc, dict) else getattr(doc, "content", "")
+                filename = doc.get("filename", "N/A") if isinstance(doc, dict) else getattr(doc, "filename", "N/A")
+                lines.append(f"[{i}] (출처: {filename}) {content[:300]}...")
+            rag_docs_list = "\n".join(lines)
+        
+        # 4. 프롬프트 구성 및 LLM 호출
+        prompt = EVALUATE_DOCS_PROMPT_TEMPLATE.format(
+            question=question,
+            goal=goal,
+            user_current_info=user_current_info,
+            baby_context=baby_context,
+            qna_docs_list=qna_docs_list,
+            rag_docs_list=rag_docs_list
+        )
+        
+        response = await llm.ainvoke([SystemMessage(content=prompt)])
+        result = parse_json_from_response(response.content.strip())
+        
+        # 5. 인덱스 기반 필터링
+        relevant_qna_indices = result.get("relevant_qna_indices", [])
+        relevant_rag_indices = result.get("relevant_rag_indices", [])
+        reason = result.get("reason", "")
+        
+        # QnA 필터링
+        if qna_docs and relevant_qna_indices:
+            filtered_qna = [qna_docs[i] for i in relevant_qna_indices if i < len(qna_docs)]
+            state["_qna_docs"] = filtered_qna
+            logger.info(f"📋 QnA 필터링: {len(qna_docs)} -> {len(filtered_qna)}개")
+        elif qna_docs and not relevant_qna_indices:
+            state["_qna_docs"] = []
+            logger.info(f"📋 QnA 필터링: {len(qna_docs)} -> 0개 (관련 없음)")
+        
+        # RAG 필터링
+        if rag_docs and relevant_rag_indices:
+            filtered_rag = [rag_docs[i] for i in relevant_rag_indices if i < len(rag_docs)]
+            state["_retrieved_docs"] = filtered_rag
+            logger.info(f"📄 RAG 필터링: {len(rag_docs)} -> {len(filtered_rag)}개")
+        elif rag_docs and not relevant_rag_indices:
+            state["_retrieved_docs"] = []
+            logger.info(f"📄 RAG 필터링: {len(rag_docs)} -> 0개 (관련 없음)")
+        
+        logger.info(f"✅ 문서 평가 완료 (사유: {reason})")
+        
+    except Exception as e:
+        logger.error(f"문서 평가 실패: {str(e)}", exc_info=True)
+        # 실패 시 원본 그대로 유지
+        
+    return state
+
+
+@track_node_execution_time("response_node")
+async def grow_response_node(state: AgentState) -> AgentState:
+    """
+    Response Node (GROW 모델 적용)
+    - 수집된 정보(Baby Info, User Reality, Goal, Docs)를 바탕으로
+    - GROW 모델 프롬프트에 따라 최종 답변을 생성합니다.
+    """
+    logger.info("===== 🌱 GROW Response 노드 실행 =====")
+    question = state.get("question", "")
+    goal = state.get("goal", "")
+    user_current_info = state.get("user_current_info", "")
+    baby_info = state.get("baby_info", {})
+    
+    # 평가 노드에서 필터링된 원본 문서를 사용
+    rag_docs = state.get("_retrieved_docs", [])
+    qna_docs = state.get("_qna_docs", [])
+    
+    # 문서 컨텍스트 구성
     formatted_qna = format_qna_docs(qna_docs) if qna_docs else ""
     rag_context = get_docs_context_string(rag_docs)
     
     docs_context = ""
-    if formatted_qna:
-        docs_context += f"[QnA 정보]\n{formatted_qna}\n\n"
-    if rag_context:
-        docs_context += f"[검색된 문서]\n{rag_context}\n\n"
-    if not docs_context:
-        docs_context = "관련된 참조 문서가 없습니다. 전문 지식을 바탕으로 가이드해주세요."
-    
-    # 이전 평가 결과 (재시도 시 다른 방법 제안용)
-    eval_context = "없음 (첫 시도)"
-    for msg in reversed(messages):
-        if isinstance(msg, AIMessage) and hasattr(msg, 'additional_kwargs'):
-            feedback = msg.additional_kwargs.get("user_feedback", "")
-            if feedback:
-                eval_context = f"이전 사용자 피드백: {feedback}"
-                break
-    
-    all_steps = "\n".join([f"  {i+1}. {s}" for i, s in enumerate(coaching_steps)])
-    
-    try:
-        baby_context = get_baby_context_string(baby_info)
-        
-        system_prompt = COACH_AGENT_PROMPT_TEMPLATE.format(
-            baby_context=baby_context,
-            goal=goal,
-            all_steps=all_steps,
-            current_step=current_step,
-            step_number=current_step_idx + 1,
-            total_steps=len(coaching_steps),
-            docs_context=docs_context,
-            eval_context=eval_context
-        )
-        
-        clean_messages = get_clean_messages_for_generation(messages)
-        recent_history = clean_messages[-5:] if len(clean_messages) > 5 else clean_messages
-        recent_history = sanitize_messages_for_llm(recent_history)
-        
-        response = await llm.ainvoke(
-            [SystemMessage(content=system_prompt)] + recent_history,
-            config={"tags": ["stream_response"]}
-        )
-        
-        state["response"] = response.content.strip()
-        state["messages"] = [response]
-        
-        logger.info(f"✅ Coach Agent 가이드 생성 완료 (단계 {current_step_idx + 1}/{len(coaching_steps)})")
-        
-    except Exception as e:
-        logger.error(f"코치 가이드 생성 실패: {str(e)}", exc_info=True)
-        state["response"] = "죄송합니다. 가이드 생성 중 오류가 발생했습니다."
-        state["messages"] = [AIMessage(content=state["response"])]
-    
-    return state
-
-
-@track_node_execution_time("coaching_evaluator")
-async def coaching_evaluator_node(state: AgentState) -> AgentState:
-    """
-    Evaluator 노드 (코칭 에이전트)
-    사용자의 응답을 분석하여 다음 경로를 결정.
-    - success: step_idx + 1 (마지막이면 completed)
-    - retry: Coach Agent로 복귀 (다른 방법 제안)
-    - stop: paused → Closing
-    - chitchat: Coach Agent로 복귀 (질문 답변 후 코칭 유도)
-    """
-    logger.info("===== 📊 Coaching Evaluator 노드 실행 =====")
-    
-    goal = state.get("goal", "")
-    coaching_steps = state.get("coaching_steps", [])
-    current_step_idx = state.get("current_step_idx", 0)
-    messages = state.get("messages", [])
-    
-    current_step = coaching_steps[current_step_idx] if coaching_steps and current_step_idx < len(coaching_steps) else ""
-    
-    # 사용자의 최신 메시지 추출
-    user_message = ""
-    for msg in reversed(messages):
-        if isinstance(msg, HumanMessage):
-            user_message = msg.content
-            break
-    
-    if not user_message:
-        logger.warning("⚠️ 사용자 메시지를 찾을 수 없습니다.")
-        return state
-    
-    llm = get_evaluator_llm()
-    if not llm:
-        logger.warning("⚠️ 평가 모델이 없어 기본값(retry)으로 처리합니다.")
-        return state
-    
-    try:
-        eval_prompt = EVALUATOR_PROMPT_TEMPLATE.format(
-            goal=goal,
-            current_step=current_step,
-            step_number=current_step_idx + 1,
-            total_steps=len(coaching_steps),
-            user_message=user_message
-        )
-        
-        eval_messages = [
-            SystemMessage(content=COACHING_EVALUATOR_SYSTEM_PROMPT),
-            HumanMessage(content=eval_prompt)
-        ]
-        
-        response = await llm.ainvoke(eval_messages)
-        response_text = response.content.strip()
-        
-        result = parse_json_from_response(response_text)
-        
-        next_action = result.get("next_action", "retry")
-        reason = result.get("reason", "")
-        user_feedback = result.get("user_feedback", "")
-        
-        logger.info(f"✅ Evaluator 판단: {next_action} (이유: {reason})")
-        
-        if next_action == "success":
-            new_idx = current_step_idx + 1
-            if new_idx >= len(coaching_steps):
-                # 모든 단계 완료
-                state["current_step_idx"] = new_idx
-                state["goal_status"] = "completed"
-                logger.info("🎉 모든 코칭 단계 완료!")
-            else:
-                # 다음 단계로 이동
-                state["current_step_idx"] = new_idx
-                logger.info(f"➡️ 다음 단계로 이동: {new_idx + 1}/{len(coaching_steps)}")
-                
-        elif next_action == "stop":
-            state["goal_status"] = "paused"
-            logger.info("⏸️ 사용자 요청으로 코칭 중단")
-            
-        elif next_action == "retry":
-            # current_step_idx는 유지, Coach Agent에서 다른 방법 제안
-            logger.info("🔄 재시도: Coach Agent에서 다른 방법 제안 예정")
-            
-        elif next_action == "chitchat":
-            # current_step_idx는 유지, Coach Agent에서 질문 답변 후 코칭 유도
-            logger.info("💬 잡담 감지: Coach Agent에서 답변 후 코칭으로 복귀 예정")
-        
-        # 피드백을 상태에 저장 (Coach Agent에서 참조용)
-        if user_feedback:
-            # 최신 AI 메시지에 피드백 추가
-            state["messages"] = [AIMessage(
-                content="", 
-                additional_kwargs={"user_feedback": user_feedback, "eval_action": next_action}
-            )]
-            
-    except Exception as e:
-        logger.error(f"Evaluator 실행 실패: {str(e)}", exc_info=True)
-        # 실패 시 기본적으로 retry (Coach Agent로 복귀)
-        logger.info("⚠️ 평가 실패, 기본값(retry)으로 Coach Agent 복귀")
-    
-    return state
-
-
-@track_node_execution_time("closing")
-async def closing_node(state: AgentState) -> AgentState:
-    """
-    Closing 노드 (코칭 에이전트)
-    대화를 종료하고 결과를 정리.
-    - completed: 축하 메시지
-    - paused: 위로/휴식 권유 메시지
-    """
-    logger.info("===== 🏁 Closing 노드 실행 =====")
-    
-    goal = state.get("goal", "")
-    coaching_steps = state.get("coaching_steps", [])
-    current_step_idx = state.get("current_step_idx", 0)
-    goal_status = state.get("goal_status", "completed")
-    baby_info = state.get("baby_info", {})
-    messages = state.get("messages", [])
+    if formatted_qna: docs_context += f"[QnA 정보]\n{formatted_qna}\n\n"
+    if rag_context: docs_context += f"[검색된 문서]\n{rag_context}\n\n"
+    if not docs_context: docs_context = "관련 문서 없음 (의학적 상식에 기반하여 답변)"
     
     llm = get_generator_llm()
     if not llm:
-        if goal_status == "completed":
-            state["response"] = "🎉 모든 단계를 완료하셨습니다! 정말 대단해요! 앞으로도 아기와 함께 행복한 시간 보내세요."
-        else:
-            state["response"] = "오늘은 여기까지 할게요. 충분히 잘하고 계세요! 언제든 다시 시작할 수 있어요 💪"
-        state["messages"] = [AIMessage(content=state["response"])]
+        state["response"] = "죄송합니다. 답변을 생성할 수 없습니다."
         return state
-    
+        
     try:
+        # 문서 컨텍스트 구성 (이미 위에서 docs_context로 준비됨)
+        
         baby_context = get_baby_context_string(baby_info)
-        all_steps = "\n".join([f"  {i+1}. {s}" for i, s in enumerate(coaching_steps)])
         
-        # 완료한 단계 수 계산
-        completed_count = min(current_step_idx, len(coaching_steps))
-        
-        system_prompt = CLOSING_PROMPT_TEMPLATE.format(
+        # GROW 프롬프트 적용
+        system_prompt = GROW_RESPONSE_PROMPT_TEMPLATE.format(
             baby_context=baby_context,
+            user_current_info=user_current_info,
+            docs_context=docs_context,
             goal=goal,
-            all_steps=all_steps,
-            completed_steps=completed_count,
-            total_steps=len(coaching_steps),
-            status=goal_status
+            question=question
         )
         
+        messages = state.get("messages", [])
         clean_messages = get_clean_messages_for_generation(messages)
-        recent_history = clean_messages[-10:] if len(clean_messages) > 10 else clean_messages
+        recent_history = clean_messages[-5:] # 최근 대화 일부 포함
         
+        # 시스템 프롬프트 + 히스토리 -> 답변 생성
         response = await llm.ainvoke(
             [SystemMessage(content=system_prompt)] + recent_history,
             config={"tags": ["stream_response"]}
         )
         
         state["response"] = response.content.strip()
+        # 답변을 마지막 메시지로 추가
         state["messages"] = [response]
         
-        logger.info(f"✅ Closing 메시지 생성 완료 (상태: {goal_status}, 완료: {completed_count}/{len(coaching_steps)})")
+        logger.info("✅ GROW 답변 생성 완료")
         
     except Exception as e:
-        logger.error(f"Closing 메시지 생성 실패: {str(e)}", exc_info=True)
-        state["response"] = "코칭을 마무리합니다. 오늘도 수고하셨습니다! 💕"
+        logger.error(f"GROW 답변 생성 실패: {str(e)}", exc_info=True)
+        state["response"] = "죄송합니다. 답변 생성 중 오류가 발생했습니다."
         state["messages"] = [AIMessage(content=state["response"])]
-    
+        
     return state
+
 
 def get_clean_messages_for_generation(messages):
     """
@@ -777,56 +661,4 @@ def get_clean_messages_for_generation(messages):
     return clean_history
 
 
-def sanitize_messages_for_llm(messages):
-    """
-    LLM에 전송하기 전 메시지 리스트를 정제하여 OpenAI API 규칙을 준수하도록 보장.
-    
-    규칙:
-    - ToolMessage는 반드시 직전에 tool_calls가 포함된 AIMessage가 있어야 함
-    - tool_calls만 있고 content가 없는 AIMessage는 대응하는 ToolMessage 없이는 무의미
-    - 고아(orphaned) ToolMessage와 tool_calls AIMessage를 제거
-    
-    Args:
-        messages: 슬라이싱된 메시지 리스트
-    
-    Returns:
-        OpenAI API에 안전하게 전송할 수 있는 정제된 메시지 리스트
-    """
-    if not messages:
-        return []
-    
-    result = []
-    i = 0
-    
-    while i < len(messages):
-        msg = messages[i]
-        
-        if isinstance(msg, ToolMessage):
-            # ToolMessage: 직전 메시지가 tool_calls를 가진 AIMessage이거나 다른 ToolMessage인지 확인
-            if result and (
-                (isinstance(result[-1], AIMessage) and getattr(result[-1], "tool_calls", None))
-                or isinstance(result[-1], ToolMessage)
-            ):
-                result.append(msg)
-            else:
-                # 고아 ToolMessage → 스킵
-                logger.debug(f"🧹 고아 ToolMessage 제거: {getattr(msg, 'name', 'unknown')}")
-            i += 1
-            continue
-        
-        if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
-            # AIMessage with tool_calls: 다음에 대응하는 ToolMessage가 있는지 확인
-            has_tool_response = (i + 1 < len(messages) and isinstance(messages[i + 1], ToolMessage))
-            if has_tool_response:
-                result.append(msg)
-            else:
-                # 대응하는 ToolMessage 없음 → 스킵
-                logger.debug("🧹 대응 ToolMessage 없는 tool_calls AIMessage 제거")
-            i += 1
-            continue
-        
-        # HumanMessage, SystemMessage, 일반 AIMessage → 그대로 유지
-        result.append(msg)
-        i += 1
-    
-    return result
+

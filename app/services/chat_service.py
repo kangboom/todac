@@ -9,11 +9,12 @@ from app.agent.graph import get_agent_graph
 from app.agent.state import AgentState
 from app.dto.baby import AgeInfo, BabyAgentInfo
 from app.services.chat_repository import get_or_create_session, get_conversation_history
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, Dict, List, Tuple
 from langgraph.types import Command
 from langchain_core.messages import HumanMessage, AIMessage
 import uuid
 import time
+import asyncio
 import logging
 import json
 from datetime import date, datetime, timezone
@@ -61,6 +62,92 @@ def _extract_doc_attr(doc: Any, attr: str, default: Any = "") -> Any:
     return getattr(doc, attr, default)
 
 
+def _load_session_data(db: Session, user_id: uuid.UUID, baby_id: uuid.UUID, session_id: uuid.UUID = None) -> Tuple:
+    """동기 DB 작업: 세션, 아기 정보, 대화 이력 로드 (to_thread로 호출)"""
+    session = get_or_create_session(db, user_id, baby_id, session_id)
+    
+    baby = db.query(BabyProfile).filter(
+        BabyProfile.id == baby_id,
+        BabyProfile.user_id == user_id
+    ).first()
+    
+    return session, baby
+
+
+def _load_conversation_history(db: Session, session_id: uuid.UUID) -> List:
+    """동기 DB 작업: 대화 이력 로드 (to_thread로 호출)"""
+    return get_conversation_history(db, session_id)
+
+
+def _save_results_to_db(
+    db: Session,
+    session,
+    question: str,
+    final_state: Dict,
+) -> Tuple[str, List[Dict], List[Dict]]:
+    """동기 DB 작업: 메시지 저장 및 커밋 (to_thread로 호출)"""
+    # 사용자 메시지 저장
+    user_message = ChatMessage(
+        session_id=session.id,
+        role=MessageRole.USER.value,
+        content=question,
+        is_emergency=False,
+        created_at=datetime.now(timezone.utc)
+    )
+    db.add(user_message)
+    
+    # RAG 소스 추출
+    extracted_rag_sources = []
+    retrieved_docs = final_state.get("_retrieved_docs", [])
+    if retrieved_docs:
+        for doc in retrieved_docs:
+            extracted_rag_sources.append({
+                "doc_id": str(_extract_doc_attr(doc, "doc_id", "")),
+                "chunk_index": _extract_doc_attr(doc, "chunk_index", ""),
+                "score": _extract_doc_attr(doc, "score", 0.0),
+                "filename": _extract_doc_attr(doc, "filename", ""),
+                "category": _extract_doc_attr(doc, "category", "")
+            })
+    
+    # QnA 소스 추출
+    extracted_qna_sources = []
+    qna_docs = final_state.get("_qna_docs", [])
+    if qna_docs:
+        for doc in qna_docs:
+            extracted_qna_sources.append({
+                "source_type": "qna",
+                "qna_id": str(_extract_doc_attr(doc, "id", "") or ""),
+                "filename": _extract_doc_attr(doc, "source", "") or "",
+                "category": _extract_doc_attr(doc, "category", "") or "",
+                "question": _extract_doc_attr(doc, "question", "") or "",
+            })
+    
+    combined_sources = extracted_rag_sources + extracted_qna_sources
+    final_response_text = final_state.get("response", "")
+    
+    # AI 응답 저장
+    assistant_message = ChatMessage(
+        session_id=session.id,
+        role=MessageRole.ASSISTANT.value,
+        content=final_response_text,
+        is_emergency=final_state.get("is_emergency", False),
+        is_retry=final_state.get("is_retry", False),
+        rag_sources=combined_sources if combined_sources else None,
+        created_at=datetime.now(timezone.utc)
+    )
+    db.add(assistant_message)
+    
+    # 세션 업데이트
+    session.updated_at = datetime.now()
+    db.add(session)
+    if not session.title:
+        session.title = question[:50]
+    
+    db.commit()
+    
+    return final_response_text, extracted_rag_sources, extracted_qna_sources
+
+
 async def send_message(
     db: Session,
     user_id: uuid.UUID,
@@ -74,8 +161,9 @@ async def send_message(
     스트리밍 대상: coach_agent, closing 노드의 LLM 응답만 (stream_response 태그)
     
     HITL 흐름:
-    1. 첫 메시지: intent → goal_setter → coach_agent → [INTERRUPT]
-    2. 후속 메시지: Command(resume=사용자응답) → evaluator → coach_agent/closing
+    1. 첫 메시지: intent → ask_situation → [INTERRUPT 1: 상황 답변 대기]
+    2. 상황 답변: Command(resume) → goal_options → [INTERRUPT 2: 목표 선택 대기]
+    3. 목표 선택: Command(resume) → research_agent → evaluate_docs → response_node
     
     Args:
         db: 데이터베이스 세션
@@ -90,16 +178,10 @@ async def send_message(
     start_time = time.time()
     
     try:
-        # 1. 세션 가져오기 또는 생성
-        session = get_or_create_session(
-            db, user_id, baby_id, session_id
+        # 1. 세션 및 아기 정보 로드 (동기 DB → to_thread)
+        session, baby = await asyncio.to_thread(
+            _load_session_data, db, user_id, baby_id, session_id
         )
-        
-        # 2. 아기 정보 가져오기
-        baby = db.query(BabyProfile).filter(
-            BabyProfile.id == baby_id,
-            BabyProfile.user_id == user_id
-        ).first()
         
         if not baby:
             yield json.dumps({
@@ -115,13 +197,14 @@ async def send_message(
         thread_id = str(session.id)
         config = {"configurable": {"thread_id": thread_id}}
         
-        # 5. 체크포인터에서 기존 상태 확인 (코칭 진행 중인지)
+        # 5. 체크포인터에서 기존 상태 확인 
         existing_state = await agent_graph.aget_state(config)
+        
+        # interrupt 상태(next가 존재)라면 무조건 재개
         is_resuming = (
             existing_state 
-            and existing_state.values 
-            and existing_state.values.get("goal_status") == "in_progress"
-            and existing_state.next  # interrupt 후 다음 노드가 있는 경우
+            and existing_state.next 
+            and len(existing_state.next) > 0
         )
         
         logger.info(f"========== 😊 에이전트 실행 시작: session_id={session.id}, is_resuming={is_resuming}, question={question[:50]}... ==========")
@@ -136,14 +219,16 @@ async def send_message(
             graph_input = Command(
                 resume=question,
                 update={
-                    "question": question,
                     "messages": [HumanMessage(content=question)]
                 }
             )
         else:
             # ===== 신규 실행 모드 =====
             # 대화 이력 로드 및 초기 상태 구성
-            conversation_history = get_conversation_history(db, session.id)
+            # 대화 이력 로드 (동기 DB → to_thread)
+            conversation_history = await asyncio.to_thread(
+                _load_conversation_history, db, session.id
+            )
             
             history_messages = []
             if conversation_history:
@@ -168,20 +253,12 @@ async def send_message(
                 "_qna_docs": [],
                 "_doc_relevance_score": None,
                 "_doc_relevance_passed": False,
-                "_missing_info": None,
-                "is_retry": False,
                 "response": "",
                 "is_emergency": False,
                 "response_time": None,
                 "_intent": None,
-                # 코칭 상태 초기값
                 "goal": None,
-                "coaching_steps": None,
-                "current_step_idx": 0,
-                "goal_status": None,
-                # 목표 승인 상태 초기값
-                "_goal_approved": None,
-                "_goal_feedback": None
+                "goal_options": None
             }
         
         # 6. astream_events로 토큰 단위 스트리밍
@@ -202,76 +279,17 @@ async def send_message(
                     }, ensure_ascii=False)
 
         # 7. 체크포인터에서 확정된 최종 상태 가져오기
-        # (on_chain_end 파싱보다 안정적 — 체크포인터가 보장하는 상태)
         saved_state = await agent_graph.aget_state(config)
         if saved_state and saved_state.values:
             final_state = saved_state.values
         
-        # 7. 응답 시간 계산
+        # 8. 응답 시간 계산
         response_time = time.time() - start_time
         
-        # 8. 사용자 메시지 DB 저장
-        user_message = ChatMessage(
-            session_id=session.id,
-            role=MessageRole.USER.value,
-            content=question,
-            is_emergency=False,
-            created_at=datetime.now(timezone.utc)
+        # 9. DB 저장 (동기 DB → to_thread)
+        final_response_text, extracted_rag_sources, extracted_qna_sources = await asyncio.to_thread(
+            _save_results_to_db, db, session, question, final_state
         )
-        db.add(user_message)
-        
-        # 9. AI 응답 DB 저장
-        extracted_rag_sources = []
-        retrieved_docs = final_state.get("_retrieved_docs", [])
-        
-        if retrieved_docs:
-            for doc in retrieved_docs:
-                extracted_rag_sources.append({
-                    "doc_id": str(_extract_doc_attr(doc, "doc_id", "")),
-                    "chunk_index": _extract_doc_attr(doc, "chunk_index", ""),
-                    "score": _extract_doc_attr(doc, "score", 0.0),
-                    "filename": _extract_doc_attr(doc, "filename", ""),
-                    "category": _extract_doc_attr(doc, "category", "")
-                })
-            
-        extracted_qna_sources = []
-        qna_docs = final_state.get("_qna_docs", [])
-        
-        if qna_docs:
-            for doc in qna_docs:
-                extracted_qna_sources.append({
-                    "source_type": "qna",
-                    "qna_id": str(_extract_doc_attr(doc, "id", "") or ""),
-                    "filename": _extract_doc_attr(doc, "source", "") or "",
-                    "category": _extract_doc_attr(doc, "category", "") or "",
-                    "question": _extract_doc_attr(doc, "question", "") or "",
-                })
-        
-        combined_sources = []
-        combined_sources.extend(extracted_rag_sources)
-        combined_sources.extend(extracted_qna_sources)
-        
-        final_response_text = final_state.get("response", "")
-
-        assistant_message = ChatMessage(
-            session_id=session.id,
-            role=MessageRole.ASSISTANT.value,
-            content=final_response_text,
-            is_emergency=final_state.get("is_emergency", False),
-            is_retry=final_state.get("is_retry", False),
-            rag_sources=combined_sources if combined_sources else None,
-            created_at=datetime.now(timezone.utc)
-        )
-        db.add(assistant_message)
-        
-        # 10. 세션 정보 업데이트
-        session.updated_at = datetime.now()
-        db.add(session)
-
-        if not session.title:
-            session.title = question[:50]
-        
-        db.commit()
         
         logger.info(f"에이전트 실행 완료: response_time={response_time:.2f}s")
         
@@ -284,18 +302,9 @@ async def send_message(
             "rag_sources": extracted_rag_sources,
             "qna_sources": extracted_qna_sources,
             "response_time": response_time,
-            # 코칭 메타데이터
             "coaching": {
                 "goal": final_state.get("goal"),
-                "goal_status": final_state.get("goal_status"),
-                "current_step_idx": final_state.get("current_step_idx", 0),
-                "total_steps": len(final_state.get("coaching_steps", []) or []),
-                "coaching_steps": final_state.get("coaching_steps"),
-                "is_coaching": final_state.get("goal_status") in ("in_progress", "completed", "paused"),
-                "awaiting_goal_approval": (
-                    final_state.get("goal_status") == "in_progress"
-                    and final_state.get("_goal_approved") is None
-                ),
+                "goal_options": final_state.get("goal_options")
             }
         }
         
