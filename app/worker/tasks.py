@@ -6,6 +6,7 @@ import uuid
 import logging
 import json
 import boto3
+import gc
 from app.core.taskiq import broker
 from app.core.database import SessionLocal
 from app.models.knowledge import KnowledgeDoc
@@ -14,7 +15,9 @@ from app.services.parsers.pymupdf_parser import PyMuPDFParser
 from app.services.parsers.docling_parser import DoclingParser
 from app.services.chunking_markdown import chunk_markdown_documents
 from app.services.markdown_service import cleanup_markdown_with_llm
-from app.services.parser_service import get_parser
+from app.services.chunking_markdown import chunk_markdown_documents
+from app.services.markdown_service import cleanup_markdown_with_llm
+from app.services.parser_service import get_parser, get_active_parser
 from app.services.s3_service import upload_to_s3, delete_from_s3, generate_storage_paths
 from app.agent.tools import get_embedding
 from app.core.milvus_schema import MILVUS_COLLECTION_NAME
@@ -80,6 +83,9 @@ async def process_document_task(
         # 3. 문서 파싱
         try:
             documents = parser.parse(content, filename)
+            # 메모리 절약: 파싱 완료 후 원본 content 삭제
+            del content
+            gc.collect() 
         except Exception as e:
             logger.error(f"문서 파싱 실패: {e}")
             raise e
@@ -151,6 +157,11 @@ async def process_document_task(
             # [Step 2] 배치 임베딩 실행 (가장 큰 성능 향상 구간)
             logger.info(f"임베딩 생성 시작 (총 {len(embedding_texts)}개 청크 Batch 처리)...")
             vectors = embeddings.embed_documents(embedding_texts)
+            
+            # 메모리 절약: 임베딩 생성 후 텍스트 리스트 삭제
+            del embedding_texts
+            gc.collect()
+            
             logger.info("임베딩 생성 완료")
 
             # [Step 3] 데이터 조립 및 Milvus 배치 저장
@@ -222,7 +233,7 @@ async def process_document_task(
         db.commit()
         
         logger.info(f"✅ 문서 처리 완료: doc_id={doc_id}")
-
+        
     except Exception as e:
         logger.error(f"태스크 처리 중 오류 발생: {e}")
         
@@ -254,4 +265,15 @@ async def process_document_task(
         
     finally:
         db.close()
+        
+        # [메모리 최적화]
+        # 1. 딥러닝 모델(Docling) 등 무거운 객체의 캐시를 비움
+        try:
+            get_active_parser.cache_clear()
+            logger.info("Parser 캐시 초기화 완료 (메모리 반환)")
+        except Exception:
+            pass
+            
+        # 2. 강제 가비지 컬렉션 수행
+        gc.collect()
 
