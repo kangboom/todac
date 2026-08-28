@@ -2,6 +2,7 @@
 App 진입점 (FastAPI 인스턴스 생성)
 """
 import logging
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
@@ -14,8 +15,16 @@ from app.api.v1.admin import (
     chat_history as admin_chat_history
 )
 from app.core.config import settings
-from app.core.database import Base, engine
 from app.models import *
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    yield
+    if settings.COACHING_V2_ENABLED:
+        from app.agent.coaching.graph import close_coaching_graph
+
+        await close_coaching_graph()
 
 # 로깅 설정
 logging.basicConfig(
@@ -27,8 +36,6 @@ logging.basicConfig(
 # uvicorn 로거 레벨 조정 (너무 많은 로그 방지)
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
-Base.metadata.create_all(bind=engine)
-
 app = FastAPI(
     title="TODAC 미숙아 챗봇 API",
     description="미숙아 챗봇 백엔드 API",
@@ -36,6 +43,7 @@ app = FastAPI(
     docs_url="/docs",  # Swagger UI 경로
     redoc_url="/redoc",  # ReDoc 경로
     openapi_url="/openapi.json",  # OpenAPI 스키마 경로
+    lifespan=lifespan,
 )
 
 # Swagger UI 커스터마이징

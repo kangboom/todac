@@ -5,13 +5,14 @@ from sqlalchemy.orm import Session
 from fastapi import HTTPException
 from app.models.chat import ChatMessage, MessageRole
 from app.models.baby import BabyProfile
-from app.agent.graph import get_agent_graph
-from app.agent.state import AgentState
 from app.dto.baby import AgeInfo, BabyAgentInfo
 from app.services.chat_repository import get_or_create_session, get_conversation_history
+from app.services import coaching_repository
+from app.models.coaching import CoachingEpisode
+from app.agent.coaching.graph import get_coaching_graph
+from app.core.config import settings
 from typing import Any, AsyncGenerator, Dict, List, Tuple
 from langgraph.types import Command
-from langchain_core.messages import HumanMessage, AIMessage
 import uuid
 import time
 import asyncio
@@ -64,13 +65,13 @@ def _extract_doc_attr(doc: Any, attr: str, default: Any = "") -> Any:
 
 def _load_session_data(db: Session, user_id: uuid.UUID, baby_id: uuid.UUID, session_id: uuid.UUID = None) -> Tuple:
     """동기 DB 작업: 세션, 아기 정보, 대화 이력 로드 (to_thread로 호출)"""
-    session = get_or_create_session(db, user_id, baby_id, session_id)
-    
     baby = db.query(BabyProfile).filter(
         BabyProfile.id == baby_id,
         BabyProfile.user_id == user_id
     ).first()
-    
+    if not baby:
+        return None, None
+    session = get_or_create_session(db, user_id, baby_id, session_id)
     return session, baby
 
 
@@ -148,7 +149,7 @@ def _save_results_to_db(
     return final_response_text, extracted_rag_sources, extracted_qna_sources
 
 
-async def send_message(
+async def send_message_v1(
     db: Session,
     user_id: uuid.UUID,
     baby_id: uuid.UUID,
@@ -176,6 +177,10 @@ async def send_message(
         SSE 이벤트 데이터 (JSON 문자열)
     """
     start_time = time.time()
+    # V2만 사용하는 프로세스가 기존 그래프의 Milvus 의존성까지 즉시 로드하지 않도록 지연 import한다.
+    from app.agent.graph import get_agent_graph
+    from app.agent.state import AgentState
+    from langchain_core.messages import HumanMessage, AIMessage
     
     try:
         # 1. 세션 및 아기 정보 로드 (동기 DB → to_thread)
@@ -322,3 +327,325 @@ async def send_message(
             "type": "error",
             "detail": f"메시지 처리 중 오류가 발생했습니다: {str(e)}"
         }, ensure_ascii=False)
+
+
+def _find_duplicate_response(
+    db: Session,
+    session_id: uuid.UUID | None,
+    request_id: uuid.UUID,
+) -> ChatMessage | None:
+    if not session_id:
+        return None
+    return db.query(ChatMessage).filter(
+        ChatMessage.session_id == session_id,
+        ChatMessage.request_id == request_id,
+        ChatMessage.role == MessageRole.ASSISTANT.value,
+    ).first()
+
+
+def _save_v2_messages(
+    db: Session,
+    session,
+    question: str,
+    response: str,
+    request_id: uuid.UUID,
+    state: Dict[str, Any],
+    *,
+    commit: bool = True,
+) -> None:
+    existing_user = db.query(ChatMessage).filter(
+        ChatMessage.session_id == session.id,
+        ChatMessage.request_id == request_id,
+        ChatMessage.role == MessageRole.USER.value,
+    ).first()
+    if not existing_user:
+        db.add(ChatMessage(
+            session_id=session.id,
+            role=MessageRole.USER.value,
+            content=question,
+            request_id=request_id,
+            created_at=datetime.now(timezone.utc),
+        ))
+
+    existing_assistant = db.query(ChatMessage).filter(
+        ChatMessage.session_id == session.id,
+        ChatMessage.request_id == request_id,
+        ChatMessage.role == MessageRole.ASSISTANT.value,
+    ).first()
+    if not existing_assistant:
+        sources = [{"doc_id": source_id} for source_id in state.get("source_ids", [])]
+        db.add(ChatMessage(
+            session_id=session.id,
+            role=MessageRole.ASSISTANT.value,
+            content=response,
+            is_emergency=state.get("is_emergency", False),
+            rag_sources=sources or None,
+            request_id=request_id,
+            created_at=datetime.now(timezone.utc),
+        ))
+    session.updated_at = datetime.now(timezone.utc)
+    if not session.title:
+        session.title = question[:50]
+    db.add(session)
+    if commit:
+        db.commit()
+    else:
+        db.flush()
+
+
+def _persist_v2_result(
+    db: Session,
+    episode: CoachingEpisode,
+    session,
+    question: str,
+    response: str,
+    request_id: uuid.UUID,
+    state: Dict[str, Any],
+) -> CoachingEpisode:
+    """Episode 업무 상태와 채팅 메시지를 하나의 DB 트랜잭션으로 저장한다."""
+    updated_episode = coaching_repository.save_episode_state(
+        db,
+        episode.id,
+        episode.version,
+        state,
+        request_id,
+        commit=False,
+    )
+    _save_v2_messages(
+        db,
+        session,
+        question,
+        response,
+        request_id,
+        state,
+        commit=False,
+    )
+    db.commit()
+    db.refresh(updated_episode)
+    return updated_episode
+
+
+def _coaching_metadata(episode: CoachingEpisode, state: Dict[str, Any]) -> Dict[str, Any]:
+    status = state.get("episode_status") or episode.status
+    metadata = {
+        "episode_id": str(episode.id),
+        "status": status,
+        "phase": state.get("phase") or episode.phase,
+        "goal": state.get("goal") or (episode.active_goal.description if episode.active_goal else None),
+        "attempt_count": state.get("attempt_count", episode.attempt_count),
+    }
+    if status == "COMPLETED":
+        metadata["next_actions"] = [
+            {"id": "new_goal", "label": "새 목표 시작"},
+            {"id": "other_question", "label": "다른 질문"},
+            {"id": "finish", "label": "종료"},
+        ]
+    return metadata
+
+
+def _checkpoint_interaction(snapshot: Any) -> Dict[str, Any] | None:
+    for task in getattr(snapshot, "tasks", ()) or ():
+        for interrupted in getattr(task, "interrupts", ()) or ():
+            value = getattr(interrupted, "value", None)
+            if isinstance(value, dict) and value.get("id"):
+                return value
+    return None
+
+
+async def send_message_v2(
+    db: Session,
+    user_id: uuid.UUID,
+    baby_id: uuid.UUID,
+    question: str,
+    session_id: uuid.UUID = None,
+    request_id: uuid.UUID = None,
+    interaction_id: uuid.UUID = None,
+    selected_option_id: str = None,
+) -> AsyncGenerator[str, None]:
+    start_time = time.time()
+    request_id = request_id or uuid.uuid4()
+    try:
+        duplicate = await asyncio.to_thread(_find_duplicate_response, db, session_id, request_id)
+        if duplicate:
+            duplicate_episode = await asyncio.to_thread(
+                coaching_repository.get_latest_episode, db, duplicate.session_id
+            )
+            if duplicate_episode and duplicate_episode.pending_interaction:
+                yield json.dumps({
+                    "type": "interaction",
+                    "episode_id": str(duplicate_episode.id),
+                    "phase": duplicate_episode.phase,
+                    "interaction": duplicate_episode.pending_interaction,
+                }, ensure_ascii=False)
+            yield json.dumps({
+                "type": "done",
+                "response": duplicate.content,
+                "session_id": str(duplicate.session_id),
+                "is_emergency": duplicate.is_emergency,
+                "rag_sources": duplicate.rag_sources or [],
+                "qna_sources": [],
+                "response_time": time.time() - start_time,
+                "coaching": _coaching_metadata(duplicate_episode, {}) if duplicate_episode else None,
+            }, ensure_ascii=False)
+            return
+
+        session, baby = await asyncio.to_thread(_load_session_data, db, user_id, baby_id, session_id)
+        if not baby:
+            yield json.dumps({"type": "error", "detail": "아기 프로필을 찾을 수 없습니다."}, ensure_ascii=False)
+            return
+
+        episode = await asyncio.to_thread(coaching_repository.get_active_episode, db, session.id)
+        if episode is None:
+            episode = await asyncio.to_thread(coaching_repository.create_episode, db, session.id)
+
+        graph = await get_coaching_graph()
+        config = {"configurable": {"thread_id": str(episode.id)}}
+        snapshot = await graph.aget_state(config)
+        is_resuming = bool(snapshot and snapshot.next)
+
+        if is_resuming:
+            business_context = await asyncio.to_thread(
+                coaching_repository.get_graph_context, db, episode.id
+            )
+            config["configurable"]["business_context"] = business_context
+            pending = (
+                _checkpoint_interaction(snapshot)
+                or episode.pending_interaction
+                or (snapshot.values or {}).get("pending_interaction")
+            )
+            expected_id = str((pending or {}).get("id") or "")
+            if not interaction_id or str(interaction_id) != expected_id:
+                if pending:
+                    yield json.dumps({
+                        "type": "interaction",
+                        "episode_id": str(episode.id),
+                        "phase": episode.phase,
+                        "interaction": pending,
+                    }, ensure_ascii=False)
+                yield json.dumps({
+                    "type": "done",
+                    "response": (pending or {}).get("prompt", "현재 코칭 단계의 응답을 입력해 주세요."),
+                    "session_id": str(session.id),
+                    "is_emergency": False,
+                    "rag_sources": [],
+                    "qna_sources": [],
+                    "response_time": time.time() - start_time,
+                    "coaching": _coaching_metadata(episode, snapshot.values or {}),
+                }, ensure_ascii=False)
+                return
+            graph_input = Command(resume={
+                "message": question,
+                "request_id": str(request_id),
+                "interaction_id": str(interaction_id),
+                "selected_option_id": selected_option_id,
+            })
+        else:
+            graph_input = {
+                "question": question,
+                "previous_question": question,
+                "session_id": session.id,
+                "user_id": user_id,
+                "response": "",
+                "is_emergency": False,
+                "episode_id": str(episode.id),
+                "phase": episode.phase,
+                "episode_status": episode.status,
+                "attempt_count": episode.attempt_count,
+                "request_id": str(request_id),
+                "latest_resume": {"message": question, "request_id": str(request_id)},
+                "resume_target": "goal_prepare" if selected_option_id == "new_goal" else "mode_router",
+                "goal_confirmed": False,
+                "constraints": [],
+                "action_options": [],
+                "source_ids": [],
+            }
+
+        episode = await asyncio.to_thread(
+            coaching_repository.claim_episode,
+            db,
+            episode.id,
+            episode.version,
+        )
+        runtime_state: Dict[str, Any] = {}
+        async for event in graph.astream_events(graph_input, config=config, version="v2"):
+            if event.get("event") == "on_chat_model_stream" and "stream_response" in event.get("tags", []):
+                chunk = event.get("data", {}).get("chunk")
+                if chunk and getattr(chunk, "content", None):
+                    yield json.dumps({"type": "chunk", "content": chunk.content}, ensure_ascii=False)
+            elif event.get("event") == "on_chain_end" and event.get("name") == "LangGraph":
+                output = event.get("data", {}).get("output")
+                if isinstance(output, dict):
+                    runtime_state = output
+
+        saved = await graph.aget_state(config)
+        state = dict(saved.values or {})
+        state.update(runtime_state)
+        response = state.get("response") or ""
+        episode = await asyncio.to_thread(
+            _persist_v2_result,
+            db,
+            episode,
+            session,
+            question,
+            response,
+            request_id,
+            state,
+        )
+
+        pending = state.get("pending_interaction")
+        if pending:
+            yield json.dumps({
+                "type": "interaction",
+                "episode_id": str(episode.id),
+                "phase": episode.phase,
+                "interaction": pending,
+            }, ensure_ascii=False)
+
+        yield json.dumps({
+            "type": "done",
+            "response": response,
+            "session_id": str(session.id),
+            "is_emergency": state.get("is_emergency", False),
+            "rag_sources": [{"doc_id": source_id} for source_id in state.get("source_ids", [])],
+            "qna_sources": [],
+            "response_time": time.time() - start_time,
+            "coaching": _coaching_metadata(episode, state),
+        }, ensure_ascii=False)
+    except coaching_repository.ConcurrentEpisodeUpdateError:
+        logger.warning("코칭 Episode 동시 갱신 충돌", exc_info=True)
+        db.rollback()
+        yield json.dumps({"type": "error", "detail": "다른 요청이 먼저 처리되었습니다. 최신 코칭 상태를 다시 확인해 주세요."}, ensure_ascii=False)
+    except Exception as exc:
+        logger.error("코칭 V2 실행 실패: %s", exc, exc_info=True)
+        db.rollback()
+        yield json.dumps({"type": "error", "detail": f"메시지 처리 중 오류가 발생했습니다: {exc}"}, ensure_ascii=False)
+
+
+async def send_message(
+    db: Session,
+    user_id: uuid.UUID,
+    baby_id: uuid.UUID,
+    question: str,
+    session_id: uuid.UUID = None,
+    request_id: uuid.UUID = None,
+    interaction_id: uuid.UUID = None,
+    selected_option_id: str = None,
+) -> AsyncGenerator[str, None]:
+    generator = send_message_v2(
+        db=db,
+        user_id=user_id,
+        baby_id=baby_id,
+        question=question,
+        session_id=session_id,
+        request_id=request_id,
+        interaction_id=interaction_id,
+        selected_option_id=selected_option_id,
+    ) if settings.COACHING_V2_ENABLED else send_message_v1(
+        db=db,
+        user_id=user_id,
+        baby_id=baby_id,
+        question=question,
+        session_id=session_id,
+    )
+    async for event in generator:
+        yield event

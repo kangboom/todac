@@ -12,6 +12,9 @@ class ChatMessageRequest(BaseModel):
     baby_id: uuid.UUID = Field(..., description="아기 프로필 ID")
     message: str = Field(..., min_length=1, description="사용자 메시지")
     session_id: Optional[uuid.UUID] = Field(None, description="세션 ID (없으면 새로 생성)")
+    request_id: Optional[uuid.UUID] = Field(None, description="클라이언트 요청 멱등성 ID")
+    interaction_id: Optional[uuid.UUID] = Field(None, description="현재 대기 중인 코칭 상호작용 ID")
+    selected_option_id: Optional[str] = Field(None, description="코칭 선택지 ID")
 
 
 class CreateSessionRequest(BaseModel):
@@ -47,7 +50,8 @@ class ChatSessionResponse(BaseModel):
 
 class ChatSessionDetailResponse(ChatSessionResponse):
     """세션 상세 응답 (메시지 포함)"""
-    messages: List[ChatMessageResponse] = []
+    messages: List[ChatMessageResponse] = Field(default_factory=list)
+    coaching: Optional[Dict[str, Any]] = None
 
 
 class ChatMessageSendResponse(BaseModel):
@@ -58,6 +62,7 @@ class ChatMessageSendResponse(BaseModel):
     rag_sources: Optional[List[Dict[str, Any]]] = Field(None, description="참조 문서 정보")
     qna_sources: Optional[List[Dict[str, Any]]] = Field(None, description="QnA 참조 정보")
     response_time: float = Field(..., description="응답 시간 (초)")
+    coaching: Optional[Dict[str, Any]] = None
 
 
 class ConversationMessage(BaseModel):

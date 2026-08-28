@@ -4,6 +4,7 @@
 from sqlalchemy.orm import Session
 from fastapi import HTTPException, status
 from app.models.chat import ChatSession, ChatMessage, MessageRole
+from app.models.coaching import CoachingEpisode
 from app.dto.chat import ConversationMessage
 from typing import List
 import uuid
@@ -22,7 +23,8 @@ def get_or_create_session(
     if session_id:
         session = db.query(ChatSession).filter(
             ChatSession.id == session_id,
-            ChatSession.user_id == user_id
+            ChatSession.user_id == user_id,
+            ChatSession.baby_id == baby_id,
         ).first()
         
         if not session:
@@ -124,3 +126,10 @@ def delete_session(
         
     db.delete(session)
     db.commit()
+
+
+def get_latest_coaching_episode(db: Session, session_id: uuid.UUID) -> CoachingEpisode | None:
+    """새로고침 시 대기 상호작용 또는 완료 후 선택지를 복구할 최신 Episode 조회."""
+    return db.query(CoachingEpisode).filter(
+        CoachingEpisode.chat_session_id == session_id,
+    ).order_by(CoachingEpisode.created_at.desc()).first()

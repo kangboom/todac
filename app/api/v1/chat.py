@@ -56,7 +56,10 @@ async def send_message(
         user_id=current_user.id,
         baby_id=request.baby_id,
         question=request.message,
-        session_id=request.session_id
+        session_id=request.session_id,
+        request_id=request.request_id,
+        interaction_id=request.interaction_id,
+        selected_option_id=request.selected_option_id,
     )
     
     return StreamingResponse(
@@ -132,6 +135,7 @@ async def get_session_detail(
     
     # 메시지 조회
     messages = chat_repository.get_session_messages(db, session_uuid, current_user.id)
+    episode = chat_repository.get_latest_coaching_episode(db, session_uuid)
     
     # 응답 생성
     message_responses = [
@@ -156,7 +160,18 @@ async def get_session_detail(
         started_at=session.started_at,
         updated_at=session.updated_at,
         message_count=len(messages),
-        messages=message_responses
+        messages=message_responses,
+        coaching={
+            "episode_id": str(episode.id),
+            "status": episode.status,
+            "phase": episode.phase,
+            "pending_interaction": episode.pending_interaction,
+            "next_actions": [
+                {"id": "new_goal", "label": "새 목표 시작"},
+                {"id": "other_question", "label": "다른 질문"},
+                {"id": "finish", "label": "종료"},
+            ] if episode.status == "COMPLETED" else [],
+        } if episode else None,
     )
 
 
