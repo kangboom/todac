@@ -1,6 +1,12 @@
-version: '3.8'
-
 services:
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./app:/app/app
+      - ./alembic:/app/alembic
+      - ./alembic.ini:/app/alembic.ini
   backend:
     build:
       context: .

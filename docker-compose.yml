@@ -1,6 +1,18 @@
-version: '3.8'
-
 services:
+  migrate:
+    image: kangbb/todac-backend:latest
+    container_name: todac-migrate
+    command: ["alembic", "upgrade", "head"]
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - todac-network
+
   # FastAPI 백엔드 서버
   backend:
     image: kangbb/todac-backend:latest
@@ -26,7 +38,12 @@ services:
       - MIN_RAG_SCORE_THRESHOLD=${MIN_RAG_SCORE_THRESHOLD:-0.7}
       - ENVIRONMENT=${ENVIRONMENT:-development}
       - DEBUG=${DEBUG:-True}
+      - COACHING_V2_ENABLED=${COACHING_V2_ENABLED:-false}
+      - COACHING_CONFIDENCE_THRESHOLD=${COACHING_CONFIDENCE_THRESHOLD:-7}
+      - COACHING_MAX_ADJUSTMENTS=${COACHING_MAX_ADJUSTMENTS:-3}
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       milvus:
@@ -55,6 +72,8 @@ services:
       - OPENAI_MODEL_EMBEDDING=${OPENAI_MODEL_EMBEDDING:-text-embedding-3-small}
       - ENVIRONMENT=${ENVIRONMENT:-development}
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       milvus:
