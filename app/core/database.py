@@ -1,13 +1,14 @@
 """
 Postgres & Milvus 연결 세션 관리
 """
-from typing import Optional
+from typing import TYPE_CHECKING, Any, Optional
 from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-from pymilvus import connections, Collection, MilvusClient
+from sqlalchemy.orm import declarative_base, sessionmaker
 from app.core.config import settings
 import logging
+
+if TYPE_CHECKING:
+    from pymilvus import Collection, MilvusClient
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,8 @@ def get_db():
 # Milvus 연결
 def get_milvus_connection():
     """Milvus 연결 가져오기"""
+    from pymilvus import connections
+
     if not connections.has_connection("default"):
         connections.connect(
             alias="default",
@@ -46,8 +49,10 @@ def get_milvus_connection():
     return connections.get_connection_addr("default")
 
 
-def get_milvus_collection(collection_name: str) -> Collection:
+def get_milvus_collection(collection_name: str) -> "Collection":
     """Milvus 컬렉션 가져오기"""
+    from pymilvus import Collection
+
     get_milvus_connection()
     collection = Collection(collection_name)
     collection.load()
@@ -55,16 +60,18 @@ def get_milvus_collection(collection_name: str) -> Collection:
 
 
 # MilvusClient 싱글톤 인스턴스
-_milvus_client: Optional[MilvusClient] = None
+_milvus_client: Optional[Any] = None
 
 
-def get_milvus_client() -> MilvusClient:
+def get_milvus_client() -> "MilvusClient":
     """
     MilvusClient 싱글톤 인스턴스 가져오기 (High-level API)
     """
     global _milvus_client
     
     if _milvus_client is None:
+        from pymilvus import MilvusClient
+
         try:
             uri = settings.MILVUS_URI
             logger.info(f"MilvusClient 연결 시도: {uri}")
