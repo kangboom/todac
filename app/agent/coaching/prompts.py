@@ -17,6 +17,16 @@ GOAL_PROMPT = """보호자가 원하는 변화를 1~3일 안에 관찰 가능한
 최초 고민: {question}
 보호자 답변: {answer}"""
 
+GOAL_REVISION_PROMPT = """보호자의 수정 의견을 반영해 현재 목표를 다시 정리하세요.
+수정을 요청하지 않은 내용은 가능한 한 유지하고, 의료적 치료나 완치를 목표로 표현하지 마세요.
+JSON만 반환하세요.
+{{"goal":"...","success_criteria":"...","time_horizon_days":1}}
+최초 고민: {question}
+현재 목표: {current_goal}
+현재 성공 기준: {current_criteria}
+현재 실행 기간: {current_days}일
+보호자 수정 의견: {feedback}"""
+
 REALITY_PROMPT = """보호자의 현재 상황을 사실 중심으로 한두 문장으로 요약하고 실행 제약을 추출하세요.
 JSON만 반환하세요: {{"summary":"...","constraints":["..."]}}
 목표: {goal}
