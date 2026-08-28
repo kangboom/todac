@@ -1,15 +1,15 @@
 """GROW 코칭 노드 모음.
 
 노드 구현은 책임별 모듈에 두고, 그래프에는 단일 레지스트리로 제공한다.
-기존 ``app.agent.coaching.nodes.<node_name>`` 접근도 유지한다.
+기존 ``app.agent.v2.nodes.<node_name>`` 접근도 유지한다.
 """
 from __future__ import annotations
 
-from app.agent.coaching.nodes.action import ACTION_NODES
-from app.agent.coaching.nodes.goal import GOAL_NODES
-from app.agent.coaching.nodes.reality import REALITY_NODES
-from app.agent.coaching.nodes.review import REVIEW_NODES
-from app.agent.coaching.nodes.routing import ROUTING_NODES
+from app.agent.v2.nodes.action import ACTION_NODES
+from app.agent.v2.nodes.goal import GOAL_NODES
+from app.agent.v2.nodes.reality import REALITY_NODES
+from app.agent.v2.nodes.review import REVIEW_NODES
+from app.agent.v2.nodes.routing import ROUTING_NODES
 
 COACHING_NODES = {
     **ROUTING_NODES,

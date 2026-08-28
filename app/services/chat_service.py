@@ -9,7 +9,7 @@ from app.dto.baby import AgeInfo, BabyAgentInfo
 from app.services.chat_repository import get_or_create_session, get_conversation_history
 from app.services import coaching_repository
 from app.models.coaching import CoachingEpisode
-from app.agent.coaching.graph import get_coaching_graph
+from app.agent.v2.graph import get_coaching_graph
 from app.core.config import settings
 from typing import Any, AsyncGenerator, Dict, List, Tuple
 from langgraph.types import Command

@@ -1,4 +1,4 @@
-"""코칭 그래프의 실행 상태."""
+"""GROW 코칭 V2 그래프의 실행 상태."""
 from __future__ import annotations
 
 from typing import Annotated, Any, Dict, List, Literal, Optional, TypedDict

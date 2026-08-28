@@ -1,7 +1,7 @@
 import pytest
 
-from app.agent.coaching import nodes
-from app.agent.coaching.nodes import common
+from app.agent.v2 import nodes
+from app.agent.v2.nodes import common
 
 
 @pytest.mark.asyncio

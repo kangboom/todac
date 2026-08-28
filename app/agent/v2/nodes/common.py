@@ -7,8 +7,8 @@ from typing import Any, Dict, List, Tuple
 
 from langchain_core.messages import SystemMessage
 
-from app.agent.coaching.prompts import SAFETY_PROMPT
-from app.agent.coaching.state import CoachingState, PendingInteraction
+from app.agent.v2.prompts import SAFETY_PROMPT
+from app.agent.v2.state import CoachingState, PendingInteraction
 from app.agent.utils import parse_json_from_response
 from app.core.llm_factory import get_evaluator_llm, get_generator_llm
 

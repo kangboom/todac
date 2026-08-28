@@ -10,7 +10,7 @@ from langgraph.types import Command
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.agent.coaching.graph import build_coaching_graph
+from app.agent.v2.graph import build_coaching_graph
 from app.models.baby import BabyProfile
 from app.models.chat import ChatMessage, ChatSession
 from app.models.coaching import ActionAttempt

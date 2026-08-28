@@ -7,9 +7,9 @@ from typing import Any, Dict
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command, interrupt
 
-from app.agent.coaching.nodes import common
-from app.agent.coaching.prompts import MODE_PROMPT
-from app.agent.coaching.state import CoachingState
+from app.agent.v2.nodes import common
+from app.agent.v2.prompts import MODE_PROMPT
+from app.agent.v2.state import CoachingState
 
 
 async def safety_gate_node(state: CoachingState) -> Command:

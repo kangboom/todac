@@ -5,9 +5,9 @@ from typing import Any, Dict
 
 from langgraph.types import Command
 
-from app.agent.coaching.nodes import common
-from app.agent.coaching.prompts import GOAL_PROMPT, GOAL_REVISION_PROMPT
-from app.agent.coaching.state import CoachingState
+from app.agent.v2.nodes import common
+from app.agent.v2.prompts import GOAL_PROMPT, GOAL_REVISION_PROMPT
+from app.agent.v2.state import CoachingState
 
 
 def goal_prepare_node(state: CoachingState) -> Dict[str, Any]:

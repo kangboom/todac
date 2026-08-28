@@ -4,7 +4,7 @@ import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
-from app.agent.coaching.graph import build_coaching_graph
+from app.agent.v2.graph import build_coaching_graph
 from app.services.coaching_repository import BUSINESS_STATE_KEYS
 
 

@@ -7,8 +7,8 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph import END, START, StateGraph
 from psycopg_pool import AsyncConnectionPool
 
-from app.agent.coaching.nodes import COACHING_NODES
-from app.agent.coaching.state import CoachingState
+from app.agent.v2.nodes import COACHING_NODES
+from app.agent.v2.state import CoachingState
 from app.core.config import settings
 
 _graph = None
