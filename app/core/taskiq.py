@@ -17,5 +17,7 @@ result_backend = RedisAsyncResultBackend(
 broker = ListQueueBroker(
     url=REDIS_URL,
     result_backend=result_backend,
+    # BRPOP은 작업이 들어올 때까지 대기하는 명령이므로 읽기 타임아웃을 두지 않는다.
+    socket_timeout=None,
 )
 
