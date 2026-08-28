@@ -9,7 +9,28 @@ from app.dto.qna import QnADoc
 from app.dto.rag import RagDoc
 
 
-class AgentState(TypedDict):
+class BaseAgentState(TypedDict, total=False):
+    """일반 대화와 모든 하위 그래프가 공유하는 최소 상태."""
+    question: str
+    previous_question: Optional[str]
+    session_id: uuid.UUID
+    user_id: uuid.UUID
+    baby_info: Optional[Dict[str, Any]]
+    messages: Annotated[List[BaseMessage], add_messages]
+    response: str
+    is_emergency: bool
+
+
+class ResearchState(TypedDict, total=False):
+    """한 번의 검색 실행 동안만 사용하는 RAG 상태."""
+    query: str
+    _retrieved_docs: Optional[List[RagDoc]]
+    _qna_docs: Optional[List[QnADoc]]
+    _doc_relevance_score: Optional[float]
+    _doc_relevance_passed: bool
+
+
+class AgentState(BaseAgentState, ResearchState, total=False):
     """LangGraph Agent 상태"""
     # 1. 입력 및 기본 정보
     question: str  # 사용자 질문 (검색용, 재작성될 수 있음)

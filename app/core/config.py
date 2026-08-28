@@ -1,7 +1,7 @@
 """
 환경변수 로드 (.env)
 """
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 from langchain_openai import OpenAIEmbeddings
 import logging
@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 class Settings(BaseSettings):
     """애플리케이션 설정"""
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
     
     # 데이터베이스 설정
     DATABASE_URL: str = "postgresql://postgres:postgres@postgres:5432/todac_db"
@@ -52,11 +53,10 @@ class Settings(BaseSettings):
     # 환경 설정
     ENVIRONMENT: str = "development"
     DEBUG: bool = True
+    COACHING_V2_ENABLED: bool = False
+    COACHING_CONFIDENCE_THRESHOLD: int = 7
+    COACHING_MAX_ADJUSTMENTS: int = 3
     
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
-
     # S3 설정
     S3_BUCKET_NAME: str = "my-rag-bucket"
     S3_REGION: str = "ap-northeast-2"  # 서울 리전
