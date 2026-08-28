@@ -1,7 +1,7 @@
 """
 채팅 관련 테이블 (ChatSession, ChatMessage)
 """
-from sqlalchemy import Column, String, Text, Boolean, ForeignKey, DateTime, Integer, CheckConstraint
+from sqlalchemy import Column, String, Text, Boolean, ForeignKey, DateTime, CheckConstraint, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -36,6 +36,7 @@ class ChatSession(Base):
     user = relationship("User", back_populates="chat_sessions")
     baby = relationship("BabyProfile", back_populates="chat_sessions")
     messages = relationship("ChatMessage", back_populates="session", cascade="all, delete-orphan", order_by="ChatMessage.created_at")
+    coaching_episodes = relationship("CoachingEpisode", back_populates="chat_session", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<ChatSession(id={self.id}, user_id={self.user_id}, baby_id={self.baby_id}, title={self.title})>"
@@ -52,11 +53,13 @@ class ChatMessage(Base):
     is_retry = Column(Boolean, default=False, nullable=False, comment="재질문 모드 여부")
     is_emergency = Column(Boolean, default=False, nullable=False, index=True, comment="응급 상황 감지 여부 (통계 분석용)")
     rag_sources = Column(JSONB, nullable=True, comment="참조 문서 정보 (예: [{'doc_id': '...', 'score': 0.9}])")
+    request_id = Column(UUID(as_uuid=True), nullable=True, index=True, comment="클라이언트 요청 멱등성 ID")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
 
     # 제약조건
     __table_args__ = (
         CheckConstraint("role IN ('USER', 'ASSISTANT')", name="check_message_role"),
+        UniqueConstraint("session_id", "request_id", "role", name="uq_chat_message_request_role"),
     )
 
     # 관계 설정

@@ -7,6 +7,16 @@ from app.models.chat import ChatSession, ChatMessage, MessageRole
 from app.models.feedback import Feedback
 from app.models.knowledge import KnowledgeDoc
 from app.models.qna import OfficialQnA
+from app.models.coaching import (
+    ActionAttempt,
+    ActionAttemptStatus,
+    CoachingEpisode,
+    CoachingEpisodeStatus,
+    CoachingEvent,
+    CoachingGoal,
+    CoachingGoalStatus,
+    CoachingPhase,
+)
 
 __all__ = [
     "User",
@@ -18,5 +28,13 @@ __all__ = [
     "Feedback",
     "KnowledgeDoc",
     "OfficialQnA",
+    "CoachingEpisode",
+    "CoachingEpisodeStatus",
+    "CoachingPhase",
+    "CoachingGoal",
+    "CoachingGoalStatus",
+    "ActionAttempt",
+    "ActionAttemptStatus",
+    "CoachingEvent",
 ]
 
