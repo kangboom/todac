@@ -3,7 +3,7 @@
 """
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, AIMessage
 from app.agent.state import AgentState
-from app.agent.prompts import (
+from app.agent.v1.prompts import (
     SIMPLE_RESPONSE_PROMPT_TEMPLATE,
     INTENT_CLASSIFICATION_PROMPT_TEMPLATE,
     EMERGENCY_RESPONSE_PROMPT_TEMPLATE,

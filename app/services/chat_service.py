@@ -178,7 +178,7 @@ async def send_message_v1(
     """
     start_time = time.time()
     # V2만 사용하는 프로세스가 기존 그래프의 Milvus 의존성까지 즉시 로드하지 않도록 지연 import한다.
-    from app.agent.graph import get_agent_graph
+    from app.agent.v1.graph import get_agent_graph
     from app.agent.state import AgentState
     from langchain_core.messages import HumanMessage, AIMessage
     

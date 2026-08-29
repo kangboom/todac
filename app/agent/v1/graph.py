@@ -5,7 +5,7 @@ from langgraph.graph import StateGraph, END, START
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg_pool import AsyncConnectionPool
 from app.agent.state import AgentState
-from app.agent.nodes import (
+from app.agent.v1.nodes import (
     intent_classifier_node,
     emergency_response_node,
     ask_situation_node,

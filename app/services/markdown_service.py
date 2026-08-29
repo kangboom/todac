@@ -3,7 +3,7 @@ Markdown 보정 서비스 (LLM 활용)
 """
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
-from app.agent.prompts import MARKDOWN_CLEANUP_PROMPT
+from app.agent.v1.prompts import MARKDOWN_CLEANUP_PROMPT
 from app.core.config import settings
 import logging
 
