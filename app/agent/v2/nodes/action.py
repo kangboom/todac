@@ -2,14 +2,152 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict
+import json
+import logging
+from typing import Any, Dict, List
 
 from langgraph.types import Command
 
 from app.agent.v2.nodes import common
-from app.agent.v2.prompts import OPTIONS_PROMPT, PLAN_PROMPT
+from app.agent.v2.prompts import (
+    OPTIONS_PROMPT,
+    OPTIONS_REGENERATION_PROMPT,
+    OPTIONS_VALIDATION_PROMPT,
+    PLAN_PROMPT,
+)
 from app.agent.v2.state import CoachingState
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
+
+MAX_OPTION_REGENERATION_ATTEMPTS = 1
+
+
+def _normalize_options(raw_options: Any) -> List[Dict[str, str]]:
+    """LLM이 생성한 선택지를 사용자에게 전달할 공통 형식으로 정리한다."""
+    if not isinstance(raw_options, list):
+        return []
+    options: List[Dict[str, str]] = []
+    for index, item in enumerate(raw_options[:3]):
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label") or "").strip()
+        if not label:
+            continue
+        options.append({
+            "id": str(item.get("id") or f"option-{index + 1}"),
+            "label": label,
+            "reason": str(item.get("reason") or "").strip(),
+        })
+    return options
+
+
+def _validate_option_structure(
+    medical_context: str,
+    options: List[Dict[str, str]],
+) -> List[Dict[str, Any]]:
+    """LLM 호출 없이 확인할 수 있는 선택지 형식 오류를 반환한다."""
+    issues: List[Dict[str, Any]] = []
+    if not medical_context.strip():
+        issues.append({
+            "option_id": "",
+            "codes": ["MEDICAL_CONTEXT_MISSING"],
+            "feedback": "현재 상황을 설명하는 의학적 배경이 없습니다.",
+        })
+    if not 2 <= len(options) <= 3:
+        issues.append({
+            "option_id": "",
+            "codes": ["INVALID_OPTION_COUNT"],
+            "feedback": "행동 선택지는 2개 또는 3개여야 합니다.",
+        })
+
+    seen_labels = set()
+    for option in options:
+        option_id = option["id"]
+        if not option["reason"]:
+            issues.append({
+                "option_id": option_id,
+                "codes": ["REASON_MISSING"],
+                "feedback": "선택지를 만든 이유가 없습니다.",
+            })
+        normalized_label = option["label"].casefold()
+        if normalized_label in seen_labels:
+            issues.append({
+                "option_id": option_id,
+                "codes": ["DUPLICATE_OPTION"],
+                "feedback": "다른 선택지와 내용이 중복됩니다.",
+            })
+        seen_labels.add(normalized_label)
+    return issues
+
+
+async def _validate_generated_options(
+    *,
+    question: str,
+    goal: str,
+    reality: str,
+    context: str,
+    medical_context: str,
+    options: List[Dict[str, str]],
+) -> Dict[str, Any]:
+    """선택지의 형식과 목표 일치성, 근거성, 안전성을 검수한다."""
+    structure_issues = _validate_option_structure(medical_context, options)
+    if structure_issues:
+        return {"valid": False, "issues": structure_issues}
+
+    candidate = {
+        "medical_context": medical_context,
+        "options": options,
+    }
+    fallback = {
+        "valid": False,
+        "issues": [{
+            "option_id": "",
+            "codes": ["VALIDATION_UNAVAILABLE"],
+            "feedback": "선택지 검수 결과를 확인하지 못했습니다.",
+        }],
+    }
+    result = await common.structured_output(
+        OPTIONS_VALIDATION_PROMPT.format(
+            question=question,
+            goal=goal,
+            reality=reality,
+            context=context,
+            candidate=json.dumps(candidate, ensure_ascii=False),
+        ),
+        fallback,
+    )
+    issues = result.get("issues")
+    if not isinstance(issues, list):
+        issues = fallback["issues"]
+    return {
+        "valid": result.get("valid") is True and not issues,
+        "issues": issues,
+    }
+
+
+async def _regenerate_options(
+    *,
+    question: str,
+    goal: str,
+    reality: str,
+    context: str,
+    previous: Dict[str, Any],
+    validation: Dict[str, Any],
+    fallback: Dict[str, Any],
+) -> Dict[str, Any]:
+    """검수 피드백을 반영해 행동 선택지 전체를 다시 생성한다."""
+    return await common.structured_output(
+        OPTIONS_REGENERATION_PROMPT.format(
+            question=question,
+            goal=goal,
+            reality=reality,
+            context=context,
+            previous=json.dumps(previous, ensure_ascii=False),
+            validation=json.dumps(validation, ensure_ascii=False),
+        ),
+        fallback,
+    )
 
 
 async def options_prepare_node(state: CoachingState) -> Dict[str, Any]:
@@ -49,17 +187,54 @@ async def options_prepare_node(state: CoachingState) -> Dict[str, Any]:
         ),
         fallback,
     )
-    medical_context = str(result.get("medical_context") or fallback["medical_context"])
-    raw_options = result.get("options") or fallback["options"]
-    options = [
-        {
-            "id": str(item.get("id") or f"option-{i + 1}"),
-            "label": str(item.get("label") or ""),
-            "reason": str(item.get("reason") or "현재 목표와 상황을 고려한 안전한 시작점입니다."),
-        }
-        for i, item in enumerate(raw_options[:3])
-        if item.get("label")
-    ]
+    accepted_result: Dict[str, Any] | None = None
+    validation: Dict[str, Any] = {"valid": False, "issues": []}
+    for attempt in range(MAX_OPTION_REGENERATION_ATTEMPTS + 1):
+        medical_context = str(result.get("medical_context") or "").strip()
+        options = _normalize_options(result.get("options"))
+        logger.info(
+            "선택지 평가 진입: episode_id=%s, attempt=%d, option_count=%d",
+            state.get("episode_id"),
+            attempt + 1,
+            len(options),
+        )
+        validation = await _validate_generated_options(
+            question=question,
+            goal=goal,
+            reality=reality,
+            context=context,
+            medical_context=medical_context,
+            options=options,
+        )
+        if validation["valid"]:
+            accepted_result = {
+                "medical_context": medical_context,
+                "options": options,
+            }
+            break
+        if attempt < MAX_OPTION_REGENERATION_ATTEMPTS:
+            logger.info(
+                "선택지 재생성 진입: episode_id=%s, attempt=%d, issue_count=%d",
+                state.get("episode_id"),
+                attempt + 1,
+                len(validation.get("issues") or []),
+            )
+            result = await _regenerate_options(
+                question=question,
+                goal=goal,
+                reality=reality,
+                context=context,
+                previous={"medical_context": medical_context, "options": options},
+                validation=validation,
+                fallback=fallback,
+            )
+
+    if accepted_result is None:
+        medical_context = fallback["medical_context"]
+        options = _normalize_options(fallback["options"])
+    else:
+        medical_context = accepted_result["medical_context"]
+        options = accepted_result["options"]
     option_explanations = "\n".join(
         f"{i}. {option['label']}\n   - 제안 이유: {option['reason']}"
         for i, option in enumerate(options, start=1)
