@@ -127,7 +127,7 @@ class CoachingGoal(Base):
     attempts = relationship("ActionAttempt", back_populates="goal", cascade="all, delete-orphan")
 
     __table_args__ = (
-        CheckConstraint("time_horizon_days BETWEEN 1 AND 3", name="check_goal_time_horizon"),
+        CheckConstraint("time_horizon_days >= 1", name="check_goal_time_horizon"),
     )
 
 

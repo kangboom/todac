@@ -15,7 +15,10 @@ def goal_prepare_node(state: CoachingState) -> Dict[str, Any]:
 
     다음 노드: wait_for_user.
     """
-    prompt = "이번 코칭을 통해 1~3일 안에 가장 먼저 달라졌으면 하는 점은 무엇인가요?"
+    prompt = (
+        "이번 코칭을 통해 가장 먼저 달라졌으면 하는 점은 무엇인가요? "
+        "생각해 둔 기간이 있다면 함께 알려주세요."
+    )
     pending = common.interaction("GOAL_INPUT", prompt)
     return {
         "phase": "GOAL",
@@ -60,7 +63,7 @@ async def apply_goal_node(state: CoachingState) -> Dict[str, Any]:
         )
 
     result = await common.structured_output(prompt, fallback)
-    days = max(1, min(3, int(result.get("time_horizon_days", 1))))
+    days = max(1, int(result.get("time_horizon_days", 1)))
     return {
         "goal": result.get("goal", fallback["goal"]),
         "success_criteria": result.get("success_criteria", fallback["success_criteria"]),

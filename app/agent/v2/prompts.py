@@ -11,7 +11,7 @@ SAFETY_PROMPT = """미숙아/신생아 보호자의 입력에서 즉시 의료�
 JSON만 반환하세요: {{"emergency":true|false}}
 입력: {message}"""
 
-GOAL_PROMPT = """보호자가 원하는 변화를 1~3일 안에 관찰 가능한 행동 목표로 정리하세요.
+GOAL_PROMPT = """보호자가 원하는 변화를 관찰 가능한 목표로 정리하고 목표 기간을 일수로 표현하세요.
 의료적 치료나 완치를 목표로 표현하지 마세요. JSON만 반환하세요.
 {{"goal":"...","success_criteria":"...","time_horizon_days":1}}
 최초 고민: {question}
