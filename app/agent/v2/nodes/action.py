@@ -13,31 +13,64 @@ from app.core.config import settings
 
 
 async def options_prepare_node(state: CoachingState) -> Dict[str, Any]:
-    """목표와 현재 상황에 맞는 근거 기반 행동 선택지를 준비한다.
+    """의학적 배경과 함께 근거 기반 행동 선택지를 준비한다.
 
     다음 노드: wait_for_user.
     """
-    query = f"{state.get('goal', '')} {state.get('reality_summary', '')}"
+    question = state.get("previous_question") or state.get("question", "")
+    goal = state.get("goal", "")
+    reality = state.get("reality_summary", "")
+    query = f"{question} {goal} {reality}"
     context, source_ids = await asyncio.to_thread(common.retrieve_context, query)
-    fallback_options = [
-        {"id": "option-1", "label": "상황과 반응을 짧게 기록해 보기"},
-        {"id": "option-2", "label": "한 번에 한 가지 환경 조건만 조정해 보기"},
-    ]
+    fallback = {
+        "medical_context": (
+            "아기의 상태 변화는 한 가지 정보만으로 판단하기보다 "
+            "돌봄 상황과 아기의 반응을 함께 관찰하는 것이 도움이 됩니다."
+        ),
+        "options": [
+            {
+                "id": "option-1",
+                "label": "상황과 반응을 짧게 기록해 보기",
+                "reason": "현재 나타나는 변화를 같은 기준으로 비교해 다음 행동을 판단하기 위해서입니다.",
+            },
+            {
+                "id": "option-2",
+                "label": "한 번에 한 가지 환경 조건만 조정해 보기",
+                "reason": "여러 조건을 동시에 바꾸지 않아야 어떤 변화가 아기의 반응과 관련 있는지 관찰하기 쉽기 때문입니다.",
+            },
+        ],
+    }
     result = await common.structured_output(
         OPTIONS_PROMPT.format(
-            goal=state.get("goal", ""),
-            reality=state.get("reality_summary", ""),
+            question=question,
+            goal=goal,
+            reality=reality,
             context=context,
         ),
-        {"options": fallback_options},
+        fallback,
     )
-    raw_options = result.get("options") or fallback_options
+    medical_context = str(result.get("medical_context") or fallback["medical_context"])
+    raw_options = result.get("options") or fallback["options"]
     options = [
-        {"id": str(item.get("id") or f"option-{i + 1}"), "label": str(item.get("label") or "")}
+        {
+            "id": str(item.get("id") or f"option-{i + 1}"),
+            "label": str(item.get("label") or ""),
+            "reason": str(item.get("reason") or "현재 목표와 상황을 고려한 안전한 시작점입니다."),
+        }
         for i, item in enumerate(raw_options[:3])
         if item.get("label")
     ]
-    prompt = "어떤 방법을 먼저 시도해 볼까요?"
+    option_explanations = "\n".join(
+        f"{i}. {option['label']}\n   - 제안 이유: {option['reason']}"
+        for i, option in enumerate(options, start=1)
+    )
+    prompt = (
+        f"{medical_context}\n\n"
+        f"현재 목표: {goal}\n"
+        f"현재 상황: {reality}\n\n"
+        f"{option_explanations}\n\n"
+        "어떤 방법을 먼저 시도해 볼까요?"
+    )
     pending = common.interaction("ACTION_SELECTION", prompt, options)
     return {
         "phase": "OPTIONS",

@@ -33,7 +33,11 @@ async def apply_reality_node(state: CoachingState) -> Dict[str, Any]:
     """
     answer = common.resume_message(state)
     result = await common.structured_output(
-        REALITY_PROMPT.format(goal=state.get("goal", ""), answer=answer),
+        REALITY_PROMPT.format(
+            question=state.get("previous_question") or state.get("question", ""),
+            goal=state.get("goal", ""),
+            answer=answer,
+        ),
         {"summary": answer, "constraints": []},
     )
     return {
