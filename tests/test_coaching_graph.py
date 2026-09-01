@@ -75,9 +75,6 @@ async def test_complete_grow_coaching_loop():
     assert result["pending_interaction"]["kind"] == "PLAN_CONFIRMATION"
 
     result = await resume(graph, config, "이 계획으로 진행", "confirm")
-    assert result["pending_interaction"]["kind"] == "CONFIDENCE_RATING"
-
-    result = await resume(graph, config, "8", "score-8")
     assert result["pending_interaction"]["kind"] == "CHECK_IN"
     assert result["attempt_count"] == 1
 
@@ -90,7 +87,7 @@ async def test_complete_grow_coaching_loop():
 
 
 @pytest.mark.asyncio
-async def test_low_confidence_returns_to_options():
+async def test_revising_plan_returns_to_options_without_creating_attempt():
     episode_id, state = initial_state()
     graph = build_coaching_graph().compile(checkpointer=InMemorySaver())
     config = {"configurable": {"thread_id": episode_id}}
@@ -102,11 +99,9 @@ async def test_low_confidence_returns_to_options():
     await resume(graph, config, "먹은 양과 시간을 기록 중이에요")
     await resume(graph, config, "맞아요", "confirm")
     await resume(graph, config, "상황과 반응을 기록해 보기", "option-1")
-    await resume(graph, config, "진행", "confirm")
-
-    result = await resume(graph, config, "4", "score-4")
+    result = await resume(graph, config, "다른 방법 선택", "revise")
     assert result["pending_interaction"]["kind"] == "ACTION_SELECTION"
-    assert result["confidence_score"] == 4
+    assert result["attempt_count"] == 0
 
 
 @pytest.mark.asyncio

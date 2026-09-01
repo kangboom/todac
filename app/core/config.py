@@ -54,7 +54,6 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
     DEBUG: bool = True
     COACHING_V2_ENABLED: bool = False
-    COACHING_CONFIDENCE_THRESHOLD: int = 7
     COACHING_MAX_ADJUSTMENTS: int = 3
     
     # S3 설정

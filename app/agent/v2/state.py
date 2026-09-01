@@ -61,7 +61,6 @@ class CoachingState(BaseAgentState, total=False):
     action_options: Annotated[List[InteractionOption], UntrackedValue]
     selected_action: Annotated[Optional[str], UntrackedValue]
     action_plan: Annotated[Optional[Dict[str, Any]], UntrackedValue]
-    confidence_score: Annotated[Optional[int], UntrackedValue]
 
     execution_result: Annotated[Optional[str], UntrackedValue]
     barrier: Annotated[Optional[str], UntrackedValue]

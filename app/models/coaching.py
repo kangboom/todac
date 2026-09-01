@@ -139,7 +139,8 @@ class ActionAttempt(Base):
     sequence = Column(Integer, nullable=False)
     selected_action = Column(Text, nullable=False)
     action_plan = Column(JSONB, nullable=False, default=dict)
-    confidence_score = Column(Integer, nullable=False)
+    # 기존 코칭 기록의 점수만 보존하며 새 코칭 흐름에서는 값을 수집하지 않는다.
+    confidence_score = Column(Integer, nullable=True)
     result = Column(Text, nullable=True)
     barrier = Column(Text, nullable=True)
     status = Column(String(20), nullable=False, default=ActionAttemptStatus.PLANNED.value)

@@ -12,7 +12,6 @@ from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
-from app.core.config import settings
 from app.models.coaching import (
     ActionAttempt,
     ActionAttemptStatus,
@@ -49,7 +48,6 @@ BUSINESS_STATE_KEYS = (
     "action_options",
     "selected_action",
     "action_plan",
-    "confidence_score",
     "execution_result",
     "barrier",
     "review_route",
@@ -143,12 +141,10 @@ def _upsert_goal(db: Session, episode: CoachingEpisode, state: Dict[str, Any]) -
 
 
 def _upsert_attempt(db: Session, goal: Optional[CoachingGoal], state: Dict[str, Any]) -> None:
-    confidence_score = int(state.get("confidence_score") or 0)
     if (
         not goal
         or not state.get("selected_action")
         or int(state.get("attempt_count") or 0) < 1
-        or confidence_score < settings.COACHING_CONFIDENCE_THRESHOLD
     ):
         return
     sequence = max(1, int(state.get("attempt_count", 1)))
@@ -162,7 +158,6 @@ def _upsert_attempt(db: Session, goal: Optional[CoachingGoal], state: Dict[str, 
             sequence=sequence,
             selected_action=state["selected_action"],
             action_plan=state.get("action_plan") or {},
-            confidence_score=confidence_score,
         )
         db.add(attempt)
     if state.get("execution_result"):

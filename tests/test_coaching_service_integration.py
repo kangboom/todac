@@ -163,7 +163,7 @@ async def test_postgres_checkpointer_resumes_after_graph_rebuild():
 
 
 @pytest.mark.integration
-def test_low_confidence_does_not_create_action_attempt():
+def test_confirmed_plan_creates_action_attempt():
     engine = create_engine(TEST_DATABASE_URL)
     Session = sessionmaker(bind=engine)
     db = Session()
@@ -202,7 +202,6 @@ def test_low_confidence_does_not_create_action_attempt():
         "time_horizon_days": 1,
         "selected_action": "수유량 기록",
         "action_plan": {"when": "수유 직후"},
-        "confidence_score": 4,
         "attempt_count": 0,
         "episode_status": "WAITING_USER",
         "phase": "OPTIONS",
@@ -212,7 +211,6 @@ def test_low_confidence_does_not_create_action_attempt():
     assert db.query(ActionAttempt).filter(ActionAttempt.goal_id == episode.active_goal_id).count() == 0
 
     state.update({
-        "confidence_score": 8,
         "attempt_count": 1,
         "phase": "CHECK_IN",
         "pending_interaction": {"id": str(uuid.uuid4()), "kind": "CHECK_IN"},
@@ -220,8 +218,8 @@ def test_low_confidence_does_not_create_action_attempt():
     stale_version = episode.version
     coaching_repository.save_episode_state(db, episode.id, stale_version, state, uuid.uuid4())
     attempt = db.query(ActionAttempt).filter(ActionAttempt.goal_id == episode.active_goal_id).one()
-    assert attempt.confidence_score == 8
     assert attempt.sequence == 1
+    assert attempt.confidence_score is None
     with pytest.raises(coaching_repository.ConcurrentEpisodeUpdateError):
         coaching_repository.save_episode_state(db, episode.id, stale_version, state, uuid.uuid4())
     db.close()

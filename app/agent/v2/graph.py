@@ -25,8 +25,8 @@ def build_coaching_graph() -> StateGraph:
     builder.add_edge(START, "safety_gate")
     for prepare in (
         "consent_prepare", "goal_prepare", "goal_confirm_prepare", "reality_prepare",
-        "reality_confirm_prepare", "options_prepare", "will_prepare", "confidence_prepare",
-        "checkin_prepare", "completion_prepare",
+        "reality_confirm_prepare", "options_prepare", "will_prepare", "checkin_prepare",
+        "completion_prepare",
     ):
         builder.add_edge(prepare, "wait_for_user")
 

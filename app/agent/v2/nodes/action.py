@@ -1,4 +1,4 @@
-"""GROW의 선택지 생성, 실행 계획, 자신감 확인 노드."""
+"""GROW의 선택지 생성과 실행 계획 노드."""
 from __future__ import annotations
 
 import asyncio
@@ -16,7 +16,6 @@ from app.agent.v2.prompts import (
     PLAN_PROMPT,
 )
 from app.agent.v2.state import CoachingState
-from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -312,44 +311,15 @@ async def will_prepare_node(state: CoachingState) -> Dict[str, Any]:
 def apply_plan_confirmation_node(state: CoachingState) -> Command:
     """실행 계획 확인 또는 다른 행동 선택 요청을 적용한다.
 
-    분기: 확인 → confidence_prepare, 수정 → options_prepare.
+    분기: 확인 → checkin_prepare, 수정 → options_prepare.
     """
     confirmed = common.selected_option(state) == "confirm" or common.resume_message(state) in (
         "진행", "좋아요", "확인",
     )
-    return Command(goto="confidence_prepare" if confirmed else "options_prepare")
-
-
-def confidence_prepare_node(state: CoachingState) -> Dict[str, Any]:
-    """실행 계획에 대한 0~10점 자신감 질문을 준비한다.
-
-    다음 노드: wait_for_user.
-    """
-    prompt = "이 계획을 실제로 해볼 수 있다는 자신감은 0점부터 10점 중 몇 점인가요?"
-    options = [{"id": f"score-{score}", "label": str(score)} for score in range(0, 11)]
-    pending = common.interaction("CONFIDENCE_RATING", prompt, options, False)
-    return {
-        "pending_interaction": pending,
-        "episode_status": "WAITING_USER",
-        "resume_target": "apply_confidence",
-        "response": prompt,
-    }
-
-
-def apply_confidence_node(state: CoachingState) -> Command:
-    """자신감 점수를 적용하고 실행 단계 진입 여부를 결정한다.
-
-    분기: 기준 미만 → options_prepare, 기준 이상 → checkin_prepare.
-    """
-    raw = common.selected_option(state).replace("score-", "") or common.resume_message(state)
-    try:
-        score = max(0, min(10, int(raw)))
-    except ValueError:
-        score = 0
-    if score < settings.COACHING_CONFIDENCE_THRESHOLD:
-        return Command(update={"confidence_score": score}, goto="options_prepare")
+    if not confirmed:
+        return Command(goto="options_prepare")
     return Command(
-        update={"confidence_score": score, "attempt_count": state.get("attempt_count", 0) + 1},
+        update={"attempt_count": state.get("attempt_count", 0) + 1},
         goto="checkin_prepare",
     )
 
@@ -359,6 +329,4 @@ ACTION_NODES = {
     "apply_option": apply_option_node,
     "will_prepare": will_prepare_node,
     "apply_plan_confirmation": apply_plan_confirmation_node,
-    "confidence_prepare": confidence_prepare_node,
-    "apply_confidence": apply_confidence_node,
 }
