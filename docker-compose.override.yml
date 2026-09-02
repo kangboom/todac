@@ -11,6 +11,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
     volumes:
       - ./app:/app/app
       - ./main.py:/app/main.py
@@ -25,3 +27,9 @@ services:
       - ./main.py:/app/main.py
     environment:
       - DEBUG=True
+  prometheus:
+    ports:
+      - "9090:9090"
+  grafana:
+    ports:
+      - "3002:3000"

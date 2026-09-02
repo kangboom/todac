@@ -6,6 +6,13 @@ services:
     networks:
       - todac-network
       - npm_network
+  grafana:
+    environment:
+      - GF_SERVER_DOMAIN=${GRAFANA_DOMAIN:-grafana.todac.cloud}
+      - GF_SERVER_ROOT_URL=https://${GRAFANA_DOMAIN:-grafana.todac.cloud}
+    networks:
+      - todac-network
+      - npm_network
   attu:
     networks:
       - npm_network

@@ -43,8 +43,8 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_KEY }}
           port: ${{ secrets.SERVER_PORT }}
-          # ★ docker-compose.prod.yml도 같이 전송
-          source: "docker-compose.yml,docker-compose.prod.yml"
+          # Compose와 Prometheus/Grafana 설정을 함께 전송
+          source: "docker-compose.yml,docker-compose.prod.yml,monitoring"
           target: "~/backend"
 
       # 5. 서버 접속 및 배포 실행
