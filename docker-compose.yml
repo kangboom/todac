@@ -70,6 +70,13 @@ services:
       - LLAMAPARSE_API_KEY=${LLAMAPARSE_API_KEY:-}
       - OPENAI_MODEL_EMBEDDING=${OPENAI_MODEL_EMBEDDING:-text-embedding-3-small}
       - ENVIRONMENT=${ENVIRONMENT:-development}
+      # 미설정 시 계측을 켜고, 빈 값(INGEST_MEASUREMENTS_DIR=)이면 끕니다.
+      - INGEST_MEASUREMENTS_DIR=${INGEST_MEASUREMENTS_DIR-/var/log/todac/ingest}
+      # 문서 본문 저장은 명시적으로 켠 경우에만 수행합니다.
+      - INGEST_CAPTURE_MARKDOWN=${INGEST_CAPTURE_MARKDOWN:-false}
+    volumes:
+      # 작업·단계별 JSONL 기록을 컨테이너 재생성 후에도 보관합니다.
+      - worker_measurements:/var/log/todac/ingest
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -265,6 +272,7 @@ volumes:
   minio_data:
   prometheus_data:
   grafana_data:
+  worker_measurements:
 
 networks:
   todac-network:

@@ -24,6 +24,13 @@ from app.core.milvus_schema import MILVUS_COLLECTION_NAME
 from app.core.database import get_milvus_client
 from app.core.config import settings, get_embeddings
 from app.core.milvus_schema import create_milvus_collection
+from app.worker.ingest_telemetry import (
+    capture_documents,
+    completed,
+    measure_ingest,
+    record,
+    stage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +43,7 @@ s3_client = boto3.client(
 )
 
 @broker.task
+@measure_ingest
 async def process_document_task(
     doc_id_str: str,
     raw_s3_key: str,
@@ -67,22 +75,26 @@ async def process_document_task(
     try:
         # 1. S3에서 파일 다운로드
         try:
-            response = s3_client.get_object(Bucket=settings.S3_BUCKET_NAME, Key=raw_s3_key)
-            content = response['Body'].read()
+            with stage("download"):
+                response = s3_client.get_object(Bucket=settings.S3_BUCKET_NAME, Key=raw_s3_key)
+                content = response['Body'].read()
             logger.info(f"S3 다운로드 완료: {len(content)} bytes")
         except Exception as e:
             logger.error(f"S3 파일 다운로드 실패: {e}")
             raise e
 
         # 2. 파서 찾기
-        parser = get_parser(filename)
+        with stage("parser_init"):
+            parser = get_parser(filename)
+        record("parser_selected", parser=type(parser).__name__)
         if not parser:
             logger.error(f"지원하지 않는 파일 형식: {filename}")
             return # 실패 처리 (DB 업데이트 등 필요할 수 있음)
 
         # 3. 문서 파싱
         try:
-            documents = parser.parse(content, filename)
+            with stage("parse"):
+                documents = parser.parse(content, filename)
             # 메모리 절약: 파싱 완료 후 원본 content 삭제
             del content
             gc.collect() 
@@ -95,68 +107,77 @@ async def process_document_task(
             if documents and len(documents) > 0:
                 original_text = documents[0].text
                 if original_text:
-                    cleaned_text = cleanup_markdown_with_llm(original_text, filename)
-                    documents[0].text = cleaned_text
-                    logger.info(f"Markdown 보정 완료: {filename}")
+                    with stage("markdown_cleanup", input_characters=len(original_text)):
+                        cleaned_text = cleanup_markdown_with_llm(original_text, filename)
+                        documents[0].text = cleaned_text
+                        logger.info(f"Markdown 보정 완료: {filename}")
 
         # 4. 텍스트 청킹
-        chunks = chunk_markdown_documents(documents)
-        if not chunks:
-            raise ValueError("파싱된 텍스트가 없습니다.")
+        capture_documents(documents)
+        with stage("chunk", input_characters=sum(len(doc.text) for doc in documents)):
+            chunks = chunk_markdown_documents(documents)
+            if not chunks:
+                raise ValueError("파싱된 텍스트가 없습니다.")
+        record("chunks_created", chunk_count=len(chunks))
 
         # 5. Markdown 텍스트 S3 업로드 (Processed)
-        markdown_text = documents[0].text if documents else ""
-        markdown_bytes = markdown_text.encode('utf-8')
-        
-        storage_paths = generate_storage_paths(doc_id, filename)
-        
-        # processed_md_key로 업로드 (raw_s3_key는 이미 API 서버에서 올림)
-        storage_url = upload_to_s3(
-            content=markdown_bytes,
-            s3_key=storage_paths.processed_md_key,
-            content_type='text/markdown'
-        )
-        uploaded_s3_keys.append(storage_url)
+        with stage("markdown_upload"):
+            markdown_text = documents[0].text if documents else ""
+            markdown_bytes = markdown_text.encode('utf-8')
+
+            storage_paths = generate_storage_paths(doc_id, filename)
+
+            # processed_md_key로 업로드 (raw_s3_key는 이미 API 서버에서 올림)
+            storage_url = upload_to_s3(
+                content=markdown_bytes,
+                s3_key=storage_paths.processed_md_key,
+                content_type='text/markdown'
+            )
+            uploaded_s3_keys.append(storage_url)
 
         # 6. 임베딩 및 Milvus 저장 (Batch 최적화 적용)
         try:
-            logger.info(f"Milvus 컬렉션 생성 시작...")
-            create_milvus_collection()
-            logger.info(f"Milvus 컬렉션 생성 완료...")
+            with stage("milvus_init"):
+                logger.info(f"Milvus 컬렉션 생성 시작...")
+                create_milvus_collection()
+                logger.info(f"Milvus 컬렉션 생성 완료...")
 
-            embeddings = get_embeddings()
-            client = get_milvus_client()
-            
-            embedding_texts = []
-            prepared_metadata = [] 
+            with stage("embedding_prepare", chunk_count=len(chunks)):
+                embeddings = get_embeddings()
+                client = get_milvus_client()
 
-            for chunk in chunks:
-                # 헤더 정보 추출
-                header_metadata = {
-                    k: v for k, v in chunk.metadata.items() 
-                    if k.startswith("Header")
-                }
-                
-                # 임베딩용 텍스트 구성
-                if header_metadata:
-                    sorted_headers = [header_metadata[k] for k in sorted(header_metadata.keys())]
-                    header_path = " > ".join(sorted_headers)
-                    text_for_embedding = f"{header_path}\n\n{chunk.text}"
-                else:
-                    text_for_embedding = chunk.text
-                
-                # 리스트에 추가 (나중에 한방에 변환)
-                embedding_texts.append(text_for_embedding)
-                
-                # 나중에 row 만들 때 매칭할 정보 저장
-                prepared_metadata.append({
-                    "chunk": chunk,
-                    "headers_json": json.dumps(header_metadata, ensure_ascii=False) if header_metadata else "{}"
-                })
+                embedding_texts = []
+                prepared_metadata = []
+
+                for chunk in chunks:
+                    # 헤더 정보 추출
+                    header_metadata = {
+                        k: v for k, v in chunk.metadata.items()
+                        if k.startswith("Header")
+                    }
+
+                    # 임베딩용 텍스트 구성
+                    if header_metadata:
+                        sorted_headers = [header_metadata[k] for k in sorted(header_metadata.keys())]
+                        header_path = " > ".join(sorted_headers)
+                        text_for_embedding = f"{header_path}\n\n{chunk.text}"
+                    else:
+                        text_for_embedding = chunk.text
+
+                    # 리스트에 추가 (나중에 한방에 변환)
+                    embedding_texts.append(text_for_embedding)
+
+                    # 나중에 row 만들 때 매칭할 정보 저장
+                    prepared_metadata.append({
+                        "chunk": chunk,
+                        "headers_json": json.dumps(header_metadata, ensure_ascii=False) if header_metadata else "{}"
+                    })
 
             # [Step 2] 배치 임베딩 실행 (가장 큰 성능 향상 구간)
             logger.info(f"임베딩 생성 시작 (총 {len(embedding_texts)}개 청크 Batch 처리)...")
-            vectors = embeddings.embed_documents(embedding_texts)
+            with stage("embed", chunk_count=len(embedding_texts)):
+                vectors = embeddings.embed_documents(embedding_texts)
+            record("vectors_created", vector_count=len(vectors))
             
             # 메모리 절약: 임베딩 생성 후 텍스트 리스트 삭제
             del embedding_texts
@@ -165,44 +186,45 @@ async def process_document_task(
             logger.info("임베딩 생성 완료")
 
             # [Step 3] 데이터 조립 및 Milvus 배치 저장
-            batch_size = 100 
-            rows = []
-            total_count = 0
-            
-            for i, vector in enumerate(vectors):
-                meta = prepared_metadata[i]
-                chunk = meta['chunk']
-                
-                row = {
-                    "doc_id": str(doc_id),
-                    "chunk_index": chunk.chunk_index,
-                    "embedding": vector,
-                    "content": chunk.text[:65535],
-                    "filename": filename[:255],
-                    "category": category[:50],
-                    "headers": meta['headers_json'][:2048]
-                }
-                rows.append(row)
-                total_count += 1
-                
-                # 배치 단위 저장
-                if len(rows) >= batch_size:
+            with stage("milvus_insert", vector_count=len(vectors)):
+                batch_size = 100
+                rows = []
+                total_count = 0
+
+                for i, vector in enumerate(vectors):
+                    meta = prepared_metadata[i]
+                    chunk = meta['chunk']
+
+                    row = {
+                        "doc_id": str(doc_id),
+                        "chunk_index": chunk.chunk_index,
+                        "embedding": vector,
+                        "content": chunk.text[:65535],
+                        "filename": filename[:255],
+                        "category": category[:50],
+                        "headers": meta['headers_json'][:2048]
+                    }
+                    rows.append(row)
+                    total_count += 1
+
+                    # 배치 단위 저장
+                    if len(rows) >= batch_size:
+                        client.insert(
+                            collection_name=MILVUS_COLLECTION_NAME,
+                            data=rows
+                        )
+                        logger.info(f"Milvus 배치 저장: {total_count}/{len(chunks)}개 청크 처리 중...")
+                        rows = []
+
+                # 남은 데이터 저장
+                if rows:
                     client.insert(
                         collection_name=MILVUS_COLLECTION_NAME,
                         data=rows
                     )
-                    logger.info(f"Milvus 배치 저장: {total_count}/{len(chunks)}개 청크 처리 중...")
-                    rows = []
 
-            # 남은 데이터 저장
-            if rows:
-                client.insert(
-                    collection_name=MILVUS_COLLECTION_NAME,
-                    data=rows
-                )
-            
-            milvus_inserted = True
-            logger.info(f"Milvus 저장 완료: 총 {total_count}개 청크")
+                milvus_inserted = True
+                logger.info(f"Milvus 저장 완료: 총 {total_count}개 청크")
             
         except Exception as e:
             logger.error(f"Milvus 저장 실패: {e}")
@@ -229,12 +251,15 @@ async def process_document_task(
             meta_info=meta_info
         )
         
-        db.add(knowledge_doc)
-        db.commit()
+        with stage("db_commit"):
+            db.add(knowledge_doc)
+            db.commit()
+        completed(chunks, markdown_bytes)
         
         logger.info(f"✅ 문서 처리 완료: doc_id={doc_id}")
         
     except Exception as e:
+        record("ingest_error", error_type=type(e).__name__)
         logger.error(f"태스크 처리 중 오류 발생: {e}")
         
         # 롤백
@@ -264,16 +289,17 @@ async def process_document_task(
                 logger.error(f"Milvus 롤백 실패: {m_err}")
         
     finally:
-        db.close()
-        
-        # [메모리 최적화]
-        # 1. 딥러닝 모델(Docling) 등 무거운 객체의 캐시를 비움
-        try:
-            get_active_parser.cache_clear()
-            logger.info("Parser 캐시 초기화 완료 (메모리 반환)")
-        except Exception:
-            pass
-            
-        # 2. 강제 가비지 컬렉션 수행
-        gc.collect()
+        with stage("cleanup"):
+            db.close()
+
+            # [메모리 최적화]
+            # 1. 딥러닝 모델(Docling) 등 무거운 객체의 캐시를 비움
+            try:
+                get_active_parser.cache_clear()
+                logger.info("Parser 캐시 초기화 완료 (메모리 반환)")
+            except Exception:
+                pass
+
+            # 2. 강제 가비지 컬렉션 수행
+            gc.collect()
 
