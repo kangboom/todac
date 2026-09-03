@@ -56,7 +56,7 @@ services:
   worker:
     image: kangbb/todac-backend:latest
     container_name: todac-worker
-    command: ["taskiq", "worker", "app.core.taskiq:broker", "app.worker.tasks", "--max-async-tasks", "1"]
+    command: ["taskiq", "worker", "app.core.taskiq:broker", "app.worker.tasks", "--workers", "1", "--max-async-tasks", "1"]
     env_file:
       - .env
     environment:
@@ -69,6 +69,7 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - LLAMAPARSE_API_KEY=${LLAMAPARSE_API_KEY:-}
       - OPENAI_MODEL_EMBEDDING=${OPENAI_MODEL_EMBEDDING:-text-embedding-3-small}
+      - INGEST_EMBEDDING_BATCH_SIZE=${INGEST_EMBEDDING_BATCH_SIZE:-20}
       - ENVIRONMENT=${ENVIRONMENT:-development}
       # 미설정 시 계측을 켜고, 빈 값(INGEST_MEASUREMENTS_DIR=)이면 끕니다.
       - INGEST_MEASUREMENTS_DIR=${INGEST_MEASUREMENTS_DIR-/var/log/todac/ingest}
