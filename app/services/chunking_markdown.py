@@ -112,6 +112,11 @@ def _split_large_chunk(
     Returns:
         청크 리스트
     """
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    if not 0 <= chunk_overlap < chunk_size:
+        raise ValueError("chunk_overlap must be between 0 and chunk_size - 1")
+
     if len(text) <= chunk_size:
         return [text]
     
@@ -119,7 +124,7 @@ def _split_large_chunk(
     start = 0
     
     while start < len(text):
-        end = start + chunk_size
+        end = min(start + chunk_size, len(text))
         
         # 문장 경계에서 자르기
         if end < len(text):
@@ -127,20 +132,21 @@ def _split_large_chunk(
             last_period = text.rfind('.', start, end)
             last_newline = text.rfind('\n', start, end)
             
-            # 문장 경계가 있으면 그곳에서 자르기
-            if last_period > start and last_period > last_newline:
-                end = last_period + 1
-            elif last_newline > start:
-                end = last_newline + 1
+            # 겹침을 빼도 다음 시작이 전진하는 경계만 사용합니다.
+            last_boundary = max(last_period, last_newline)
+            if last_boundary > start and last_boundary + 1 - start > chunk_overlap:
+                end = last_boundary + 1
         
         chunk = text[start:end].strip()
         if chunk:
             chunks.append(chunk)
         
-        # 다음 청크 시작 위치 (겹침 고려)
-        start = end - chunk_overlap
-        if start >= len(text):
+        # 마지막 구간을 처리했으면 겹침 부분을 다시 추가하지 않습니다.
+        if end == len(text):
             break
+
+        # 위 경계 조건과 chunk_overlap < chunk_size로 전진이 보장됩니다.
+        start = end - chunk_overlap
     
     return chunks
 
