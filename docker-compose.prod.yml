@@ -6,6 +6,11 @@ services:
     networks:
       - todac-network
       - npm_network
+  worker:
+    # 비교 실험에서 worker 컨테이너 전체의 메모리 상한을 3 GiB로 고정합니다.
+    mem_limit: 3g
+    # 메모리 + swap 합계도 3 GiB로 설정해 worker의 swap 사용을 막습니다.
+    memswap_limit: 3g
   grafana:
     environment:
       - GF_SERVER_DOMAIN=${GRAFANA_DOMAIN:-grafana.todac.cloud}
