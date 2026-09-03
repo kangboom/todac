@@ -51,6 +51,10 @@ class Measurement:
         self.stage_name = "setup"
         self.completed = False
         self.directory = Path(os.environ["INGEST_MEASUREMENTS_DIR"])
+        self.memory_probe = None
+        if os.getenv("INGEST_MEMORY_PROBE", "false").lower() == "true":
+            from app.worker.ingest_memory_probe import MemoryProbe
+            self.memory_probe = MemoryProbe()
 
     def emit(self, event, **details):
         # Measurement failures must not change ingestion behavior.
@@ -99,6 +103,18 @@ def record(event, **details):
     measurement = _active.get()
     if measurement is not None:
         measurement.emit(event, **details)
+
+
+def track_parser_memory(parser):
+    """Observe model owners while alive; retain only weak references."""
+    measurement = _active.get()
+    if measurement is None or measurement.memory_probe is None:
+        return
+    try:
+        measurement.memory_probe.track_parser(parser)
+        measurement.memory_probe.snapshot(measurement.emit, "objects_tracked")
+    except Exception as error:
+        measurement.emit("memory_probe_error", error_type=type(error).__name__)
 
 
 def capture_documents(documents):
@@ -157,6 +173,12 @@ def measure_ingest(function):
         finally:
             # A SIGKILL produces no task_end: correlate cAdvisor and kernel OOM records.
             measurement.emit("task_end", outcome=outcome)
-            _active.reset(token)
+            try:
+                # Keep task_end as the original baseline, before the release experiment.
+                # Raised exceptions can retain task frames; do not mislabel those as returned.
+                if outcome == "completed" and measurement.memory_probe is not None:
+                    measurement.memory_probe.run(measurement.emit)
+            finally:
+                _active.reset(token)
 
     return measured

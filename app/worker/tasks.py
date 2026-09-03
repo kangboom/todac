@@ -30,6 +30,7 @@ from app.worker.ingest_telemetry import (
     measure_ingest,
     record,
     stage,
+    track_parser_memory,
 )
 
 logger = logging.getLogger(__name__)
@@ -91,10 +92,14 @@ async def process_document_task(
             logger.error(f"지원하지 않는 파일 형식: {filename}")
             return # 실패 처리 (DB 업데이트 등 필요할 수 있음)
 
+        track_parser_memory(parser)
+
         # 3. 문서 파싱
         try:
             with stage("parse"):
                 documents = parser.parse(content, filename)
+            # Pipelines/models are loaded lazily by convert(), so observe them again.
+            track_parser_memory(parser)
             # 메모리 절약: 파싱 완료 후 원본 content 삭제
             del content
             gc.collect() 
