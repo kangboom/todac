@@ -25,6 +25,11 @@ class DoclingParser(BaseParser):
             pipeline_options = PdfPipelineOptions()
             pipeline_options.do_ocr = False           # OCR 비활성화
             pipeline_options.do_table_structure = True # 테이블 구조 인식 켜기
+            # 동시 처리 페이지와 단계 사이 대기량을 줄여 파싱 중 메모리 사용을 제한
+            pipeline_options.layout_batch_size = 1
+            pipeline_options.table_batch_size = 1
+            pipeline_options.ocr_batch_size = 1
+            pipeline_options.queue_max_size = 4
             
             # 2. Converter 생성 시 포맷 옵션으로 전달
             self.converter = DocumentConverter(
