@@ -102,7 +102,7 @@ def _split_large_chunk(
     chunk_overlap: int
 ) -> List[str]:
     """
-    큰 청크를 작은 청크로 분할 (문장 경계 고려)
+    큰 청크를 작은 청크로 분할 (문장 경계, 공백, 최대 길이 순으로 고려)
     
     Args:
         text: 분할할 텍스트
@@ -136,6 +136,11 @@ def _split_large_chunk(
             last_boundary = max(last_period, last_newline)
             if last_boundary > start and last_boundary + 1 - start > chunk_overlap:
                 end = last_boundary + 1
+            else:
+                # 문장 경계를 사용할 수 없으면 전진 가능한 공백을 선택합니다.
+                last_space = text.rfind(' ', start, end)
+                if last_space > start and last_space + 1 - start > chunk_overlap:
+                    end = last_space + 1
         
         chunk = text[start:end].strip()
         if chunk:
