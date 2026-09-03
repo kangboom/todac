@@ -1,0 +1,630 @@
+{
+  "id": null,
+  "uid": "todac-worker-ingest",
+  "title": "Todac Worker · Ingest",
+  "description": "기존 배포 worker의 컨테이너 메모리와 CPU를 관찰합니다. cAdvisor의 1초 수집 샘플을 사용하며, 단계별 로그 및 커널 OOM 기록과 함께 확인합니다.",
+  "tags": [
+    "todac",
+    "worker",
+    "ingest",
+    "memory"
+  ],
+  "timezone": "Asia/Seoul",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "graphTooltip": 1,
+  "refresh": "5s",
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "5s",
+      "10s",
+      "30s",
+      "1m"
+    ],
+    "time_options": [
+      "5m",
+      "15m",
+      "30m",
+      "1h",
+      "3h",
+      "6h",
+      "12h",
+      "24h"
+    ]
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "데이터 소스",
+        "type": "datasource",
+        "query": "prometheus",
+        "regex": "/^Prometheus$/",
+        "refresh": 1,
+        "current": {},
+        "options": [],
+        "hide": 0,
+        "multi": false,
+        "includeAll": false
+      }
+    ]
+  },
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "측정 기준",
+      "gridPos": {
+        "h": 3,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**대상: `todac-worker` · 시간: 한국 시간**\n\n메모리는 1초 간격으로 수집하고 화면은 5초마다 새로고침합니다. **관측 최대 메모리**는 선택한 조회 구간의 수집 샘플 중 최대값이며, 커널 `memory.peak`나 개별 작업의 최대값과는 다릅니다. `데이터 없음`은 0이나 정상 상태를 뜻하지 않습니다. cAdvisor 수집 성공만으로 worker 작업 성공을 판단할 수는 없습니다."
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "cAdvisor 수집 상태",
+      "description": "Prometheus가 cAdvisor /metrics를 수집할 수 있는지 표시합니다. 1은 수집 성공, 0은 수집 실패입니다. worker의 작업 완료 상태와는 별개입니다.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 3
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "interval": "1s",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "min(up{job=\"todac-cadvisor\"})",
+          "legendFormat": "",
+          "instant": true,
+          "range": false,
+          "interval": "1s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "min": 0,
+          "noValue": "데이터 없음",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "수집 실패",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "수집 성공",
+                  "color": "green"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "현재 메모리",
+      "description": "worker 컨테이너의 전체 메모리 사용량입니다. 모든 자식 프로세스와 파일 캐시 등을 포함하며, 특정 자식 프로세스의 RSS와 같은 값이 아닙니다. 수집 실패 시 마지막 값이 잠시 남을 수 있으므로 수집 상태와 데이터 경과 시간을 함께 확인하세요.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 3
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "interval": "1s",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "max(container_memory_usage_bytes{job=\"todac-cadvisor\",name=\"todac-worker\"}) / 1024 / 1024",
+          "legendFormat": "",
+          "instant": true,
+          "range": false,
+          "interval": "1s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: MiB",
+          "decimals": 1,
+          "min": 0,
+          "noValue": "데이터 없음",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "관측 최대 메모리 · 조회 구간",
+      "description": "조회 구간의 전체 수집 샘플에 max_over_time을 적용합니다. 그래프 표시 간격이 넓어져도 샘플의 최대값을 계산하지만, 수집 사이의 순간 피크나 수집 이전 사용량은 알 수 없습니다. 컨테이너가 재생성된 구간은 여러 컨테이너 수명을 포함할 수 있습니다.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 3
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "interval": "1s",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "max(max_over_time(container_memory_usage_bytes{job=\"todac-cadvisor\",name=\"todac-worker\"}[$__range])) / 1024 / 1024",
+          "legendFormat": "",
+          "instant": true,
+          "range": false,
+          "interval": "1s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: MiB",
+          "decimals": 1,
+          "min": 0,
+          "noValue": "데이터 없음",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "worker 데이터 경과 시간",
+      "description": "cAdvisor가 worker를 마지막으로 관찰한 뒤 경과한 시간입니다. 값이 계속 증가하면 현재 메모리 값도 오래된 데이터일 수 있습니다.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 3
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "interval": "1s",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "time() - max(container_last_seen{job=\"todac-cadvisor\",name=\"todac-worker\"})",
+          "legendFormat": "",
+          "instant": true,
+          "range": false,
+          "interval": "1s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 1,
+          "min": 0,
+          "noValue": "데이터 없음",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 5
+              },
+              {
+                "color": "red",
+                "value": 15
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "worker 메모리 변화",
+      "description": "전체 사용량, RSS, working set을 비교합니다. 전체 사용량에는 파일 캐시 등이 포함됩니다. RSS는 cgroup 메모리 통계이며 /proc의 개별 프로세스 RSS와 일치하지 않을 수 있습니다. Working set은 전체 사용량에서 비활성 파일 캐시 등을 제외한 추정 지표로, OOM 임계값 자체가 아닙니다. 선이 끊긴 구간은 보간하지 않습니다.",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "interval": "1s",
+      "maxDataPoints": 5000,
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "max(container_memory_usage_bytes{job=\"todac-cadvisor\",name=\"todac-worker\"}) / 1024 / 1024",
+          "legendFormat": "전체 사용량",
+          "instant": false,
+          "range": true,
+          "interval": "1s"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "max(container_memory_rss{job=\"todac-cadvisor\",name=\"todac-worker\"}) / 1024 / 1024",
+          "legendFormat": "RSS",
+          "instant": false,
+          "range": true,
+          "interval": "1s"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "max(container_memory_working_set_bytes{job=\"todac-cadvisor\",name=\"todac-worker\"}) / 1024 / 1024",
+          "legendFormat": "Working set",
+          "instant": false,
+          "range": true,
+          "interval": "1s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: MiB",
+          "min": 0,
+          "decimals": 1,
+          "noValue": "데이터 없음",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisPlacement": "auto",
+            "axisLabel": "MiB",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "worker CPU 사용량",
+      "description": "TaskIQ 부모와 자식 프로세스를 포함한 컨테이너 CPU 사용량입니다. 1.0 cores는 CPU 코어 하나를 완전히 사용하는 수준입니다. CPU 평균 계산 구간은 화면 해상도에 맞춰 조정되며, 최소 수집 간격은 1초로 지정합니다.",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "interval": "1s",
+      "maxDataPoints": 5000,
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(container_cpu_usage_seconds_total{job=\"todac-cadvisor\",name=\"todac-worker\"}[$__rate_interval]))",
+          "legendFormat": "worker CPU",
+          "instant": false,
+          "range": true,
+          "interval": "1s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: cores",
+          "min": 0,
+          "decimals": 1,
+          "noValue": "데이터 없음",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisPlacement": "auto",
+            "axisLabel": "CPU cores",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "다른 컨테이너와 메모리 비교",
+      "description": "기존 Todac 서비스와 모니터링 컨테이너의 메모리를 비교합니다. 서비스별 값이며 호스트 전체 사용량이나 가용 메모리를 나타내지는 않습니다.",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "interval": "1s",
+      "maxDataPoints": 5000,
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "max by (name) (container_memory_usage_bytes{job=\"todac-cadvisor\",name=~\"todac-(worker|backend|postgres|redis|milvus|etcd|minio|attu|cadvisor|prometheus|grafana)\"}) / 1024 / 1024",
+          "legendFormat": "{{name}}",
+          "instant": false,
+          "range": true,
+          "interval": "1s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: MiB",
+          "min": 0,
+          "decimals": 1,
+          "noValue": "데이터 없음",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisPlacement": "auto",
+            "axisLabel": "MiB",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        }
+      }
+    }
+  ]
+}

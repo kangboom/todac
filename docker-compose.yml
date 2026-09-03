@@ -157,6 +157,29 @@ services:
     networks:
       - todac-network
 
+  # 컨테이너 CPU/메모리 수집 (Linux 배포 서버)
+  cadvisor:
+    image: ghcr.io/google/cadvisor:0.55.1
+    container_name: todac-cadvisor
+    # 호스트의 컨테이너/cgroup 통계를 읽기 위한 공식 실행 구성
+    privileged: true
+    devices:
+      - /dev/kmsg:/dev/kmsg
+    command:
+      - "--housekeeping_interval=1s"
+      - "--allow_dynamic_housekeeping=false"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /dev/disk:/dev/disk:ro
+    expose:
+      - "8080"
+    restart: unless-stopped
+    networks:
+      - todac-network
+
   # Prometheus 모니터링
   prometheus:
     image: prom/prometheus:v3.14.0

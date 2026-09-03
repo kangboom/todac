@@ -1,0 +1,14 @@
+apiVersion: 1
+
+providers:
+  - name: todac-dashboards
+    orgId: 1
+    folder: Todac
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    # 대시보드 정의 파일의 변경 확인 주기이며, 메트릭 수집 주기와는 별개입니다.
+    # Docker bind mount에서도 변경을 감지하도록 10초보다 긴 polling 주기를 사용합니다.
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/provisioning/dashboards

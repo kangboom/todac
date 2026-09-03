@@ -8,3 +8,12 @@ scrape_configs:
     static_configs:
       - targets:
           - backend:8000
+
+  # ingest 중 메모리 증가를 관찰하기 위해 cAdvisor와 동일한 1초 주기로 수집
+  - job_name: "todac-cadvisor"
+    scrape_interval: 1s
+    scrape_timeout: 1s
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - cadvisor:8080

@@ -79,6 +79,9 @@ jobs:
             # 배포용 설정 적용하여 컨테이너 실행
             # docker-compose.yml (기본) + docker-compose.prod.yml (배포 설정)
             docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --remove-orphans
+
+            # bind mount된 수집 설정과 대시보드 등록 설정을 새로 읽도록 모니터링 서비스만 재생성
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --no-deps --force-recreate prometheus grafana
             
             # 뒷정리
             docker image prune -f
