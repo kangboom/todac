@@ -4,7 +4,6 @@ TaskIQ Worker Tasks
 """
 import uuid
 import logging
-import json
 import boto3
 import gc
 from app.core.taskiq import broker
@@ -32,6 +31,7 @@ from app.worker.ingest_telemetry import (
     stage,
     track_parser_memory,
 )
+from app.worker.ingest_batches import embed_and_insert_batches
 
 logger = logging.getLogger(__name__)
 
@@ -147,89 +147,75 @@ async def process_document_task(
                 create_milvus_collection()
                 logger.info(f"Milvus 컬렉션 생성 완료...")
 
-            with stage("embedding_prepare", chunk_count=len(chunks)):
-                embeddings = get_embeddings()
-                client = get_milvus_client()
+            embeddings = get_embeddings()
+            client = get_milvus_client()
+            batch_size = settings.INGEST_EMBEDDING_BATCH_SIZE
+            logger.info(
+                f"임베딩 및 Milvus 배치 저장 시작 "
+                f"(청크={len(chunks)}, 배치 크기={batch_size})..."
+            )
 
-                embedding_texts = []
-                prepared_metadata = []
+            def embed_batch(texts, batch_number, total_batches):
+                with stage(
+                    "embed_batch",
+                    batch_number=batch_number,
+                    total_batches=total_batches,
+                    chunk_count=len(texts),
+                ):
+                    return embeddings.embed_documents(texts)
 
-                for chunk in chunks:
-                    # 헤더 정보 추출
-                    header_metadata = {
-                        k: v for k, v in chunk.metadata.items()
-                        if k.startswith("Header")
-                    }
+            def build_row(chunk, vector, headers_json):
+                return {
+                    "doc_id": str(doc_id),
+                    "chunk_index": chunk.chunk_index,
+                    "embedding": vector,
+                    "content": chunk.text[:65535],
+                    "filename": filename[:255],
+                    "category": category[:50],
+                    "headers": headers_json[:2048],
+                }
 
-                    # 임베딩용 텍스트 구성
-                    if header_metadata:
-                        sorted_headers = [header_metadata[k] for k in sorted(header_metadata.keys())]
-                        header_path = " > ".join(sorted_headers)
-                        text_for_embedding = f"{header_path}\n\n{chunk.text}"
-                    else:
-                        text_for_embedding = chunk.text
+            def mark_milvus_write_attempt():
+                nonlocal milvus_inserted
+                # A write may reach Milvus before the client raises an error.
+                # Include every attempted write in document-level rollback.
+                milvus_inserted = True
 
-                    # 리스트에 추가 (나중에 한방에 변환)
-                    embedding_texts.append(text_for_embedding)
-
-                    # 나중에 row 만들 때 매칭할 정보 저장
-                    prepared_metadata.append({
-                        "chunk": chunk,
-                        "headers_json": json.dumps(header_metadata, ensure_ascii=False) if header_metadata else "{}"
-                    })
-
-            # [Step 2] 배치 임베딩 실행 (가장 큰 성능 향상 구간)
-            logger.info(f"임베딩 생성 시작 (총 {len(embedding_texts)}개 청크 Batch 처리)...")
-            with stage("embed", chunk_count=len(embedding_texts)):
-                vectors = embeddings.embed_documents(embedding_texts)
-            record("vectors_created", vector_count=len(vectors))
-            
-            # 메모리 절약: 임베딩 생성 후 텍스트 리스트 삭제
-            del embedding_texts
-            gc.collect()
-            
-            logger.info("임베딩 생성 완료")
-
-            # [Step 3] 데이터 조립 및 Milvus 배치 저장
-            with stage("milvus_insert", vector_count=len(vectors)):
-                batch_size = 100
-                rows = []
-                total_count = 0
-
-                for i, vector in enumerate(vectors):
-                    meta = prepared_metadata[i]
-                    chunk = meta['chunk']
-
-                    row = {
-                        "doc_id": str(doc_id),
-                        "chunk_index": chunk.chunk_index,
-                        "embedding": vector,
-                        "content": chunk.text[:65535],
-                        "filename": filename[:255],
-                        "category": category[:50],
-                        "headers": meta['headers_json'][:2048]
-                    }
-                    rows.append(row)
-                    total_count += 1
-
-                    # 배치 단위 저장
-                    if len(rows) >= batch_size:
-                        client.insert(
-                            collection_name=MILVUS_COLLECTION_NAME,
-                            data=rows
-                        )
-                        logger.info(f"Milvus 배치 저장: {total_count}/{len(chunks)}개 청크 처리 중...")
-                        rows = []
-
-                # 남은 데이터 저장
-                if rows:
+            def insert_batch(rows, batch_number, total_batches):
+                with stage(
+                    "milvus_insert_batch",
+                    batch_number=batch_number,
+                    total_batches=total_batches,
+                    row_count=len(rows),
+                ):
                     client.insert(
                         collection_name=MILVUS_COLLECTION_NAME,
-                        data=rows
+                        data=rows,
                     )
 
-                milvus_inserted = True
-                logger.info(f"Milvus 저장 완료: 총 {total_count}개 청크")
+            def log_stored_batch(batch_number, total_batches, total_count):
+                logger.info(
+                    f"임베딩 및 Milvus 배치 저장: "
+                    f"{batch_number}/{total_batches}, 누적 {total_count}/{len(chunks)}"
+                )
+                record(
+                    "embedding_batch_stored",
+                    batch_number=batch_number,
+                    total_batches=total_batches,
+                    total_count=total_count,
+                )
+
+            total_count = embed_and_insert_batches(
+                chunks=chunks,
+                batch_size=batch_size,
+                embed_documents=embed_batch,
+                insert_rows=insert_batch,
+                build_row=build_row,
+                before_insert=mark_milvus_write_attempt,
+                after_insert=log_stored_batch,
+            )
+            record("vectors_created", vector_count=total_count)
+            logger.info(f"Milvus 저장 완료: 총 {total_count}개 청크")
             
         except Exception as e:
             logger.error(f"Milvus 저장 실패: {e}")

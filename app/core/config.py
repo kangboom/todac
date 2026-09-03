@@ -1,6 +1,7 @@
 """
 환경변수 로드 (.env)
 """
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 from langchain_openai import OpenAIEmbeddings
@@ -45,6 +46,7 @@ class Settings(BaseSettings):
     OPENAI_MODEL_REWRITE: str = "gpt-4o-mini"  # 쿼리 재작성 모델
     OPENAI_MODEL_GENERATION: str = "gpt-4o-mini"  # 답변 생성 모델
     OPENAI_MODEL_EMBEDDING: str = "text-embedding-3-small"  # 임베딩 모델
+    INGEST_EMBEDDING_BATCH_SIZE: int = Field(default=20, ge=1, le=200)
     
     # RAG 설정
     MAX_RAG_RETRIEVAL_ATTEMPTS: int = 3  # 최대 RAG 검색 시도 횟수
