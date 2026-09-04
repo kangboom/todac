@@ -19,6 +19,16 @@ class IngestSettingsTests(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 Settings(_env_file=None)
 
+    def test_docling_page_batch_size_is_loaded_from_environment(self):
+        with patch.dict(os.environ, {"DOCLING_PAGE_BATCH_SIZE": "7"}):
+            settings = Settings(_env_file=None)
+        self.assertEqual(settings.DOCLING_PAGE_BATCH_SIZE, 7)
+
+    def test_docling_page_batch_size_must_be_positive(self):
+        with patch.dict(os.environ, {"DOCLING_PAGE_BATCH_SIZE": "0"}):
+            with self.assertRaises(ValidationError):
+                Settings(_env_file=None)
+
 
 if __name__ == "__main__":
     unittest.main()

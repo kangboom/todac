@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     
     # PDF 파서 설정
     PDF_PARSER: str = "pymupdf"  # "pymupdf", "llamaparse", 또는 "docling"
+    DOCLING_PAGE_BATCH_SIZE: int = Field(default=5, ge=1, le=100)
     
     # LlamaParse 설정
     LLAMAPARSE_API_KEY: Optional[str] = None  # LlamaParse API 키 (무료 사용량 제한 있음)

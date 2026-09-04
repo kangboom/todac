@@ -1,134 +1,176 @@
-"""
-Docling을 사용하여 PDF를 Markdown으로 변환하는 파서
-"""
-from typing import List, Dict, Any
-import tempfile
-import os
+"""Docling PDF parser with bounded, sequential page-range conversion."""
 
-from sqlalchemy.sql import True_
-from app.services.parsers.base import BaseParser
-from app.dto.knowledge import ParsedDocument
+import gc
 import logging
-from docling.datamodel.pipeline_options import PdfPipelineOptions
+import os
+import tempfile
+from typing import List
+
+import pymupdf
 from docling.datamodel.base_models import InputFormat
-from docling.document_converter import PdfFormatOption, DocumentConverter
+from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.document_converter import DocumentConverter, PdfFormatOption
+from docling_core.types.doc import DocItemLabel
+
+from app.core.config import settings
+from app.dto.knowledge import ParsedDocument
+from app.services.parsers.base import BaseParser
 
 logger = logging.getLogger(__name__)
 
 
+def page_ranges(total_pages: int, batch_size: int):
+    """Yield one-based, inclusive page ranges in document order."""
+    if total_pages < 1:
+        raise ValueError("PDF에 처리할 페이지가 없습니다.")
+    if batch_size < 1:
+        raise ValueError("Docling 페이지 배치 크기는 1 이상이어야 합니다.")
+    for start_page in range(1, total_pages + 1, batch_size):
+        yield start_page, min(start_page + batch_size - 1, total_pages)
+
+
 class DoclingParser(BaseParser):
-    """Docling을 사용하여 PDF를 Markdown으로 변환하는 파서"""
-    
-    def __init__(self):
+    """Convert PDFs to Markdown while bounding each Docling result to a page range."""
+
+    def __init__(self, page_batch_size: int | None = None):
+        self.page_batch_size = (
+            settings.DOCLING_PAGE_BATCH_SIZE if page_batch_size is None else page_batch_size
+        )
+        if self.page_batch_size < 1:
+            raise ValueError("Docling 페이지 배치 크기는 1 이상이어야 합니다.")
+
         try:
-            # 1. 파이프라인 옵션 구성
             pipeline_options = PdfPipelineOptions()
-            pipeline_options.do_ocr = False           # OCR 비활성화
-            pipeline_options.do_table_structure = True # 테이블 구조 인식 켜기
-            # 동시 처리 페이지와 단계 사이 대기량을 줄여 파싱 중 메모리 사용을 제한
+            pipeline_options.do_ocr = False
+            pipeline_options.do_table_structure = True
             pipeline_options.layout_batch_size = 1
             pipeline_options.table_batch_size = 1
             pipeline_options.ocr_batch_size = 1
             pipeline_options.queue_max_size = 4
-            
-            # 2. Converter 생성 시 포맷 옵션으로 전달
+
             self.converter = DocumentConverter(
                 format_options={
                     InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
                 }
             )
-            logger.info("Docling DocumentConverter가 초기화되었습니다 (OCR: Disabled, Table: True).")
-        except Exception as e:
-            logger.error(f"Docling 초기화 실패: {str(e)}")
+            logger.info(
+                "Docling DocumentConverter가 초기화되었습니다 "
+                "(OCR: Disabled, Table: True, Page batch: %d).",
+                self.page_batch_size,
+            )
+        except Exception as error:
+            logger.error("Docling 초기화 실패: %s", error)
             self.converter = None
 
+    @staticmethod
+    def _page_count(pdf_path: str) -> int:
+        with pymupdf.open(pdf_path) as pdf:
+            return pdf.page_count
+
+    @staticmethod
+    def _export_without_headers_and_footers(doc) -> str:
+        for item, _ in doc.iterate_items():
+            if hasattr(item, "text"):
+                stripped_text = item.text.strip()
+                log_text = stripped_text[:50] + ("..." if len(stripped_text) > 50 else "")
+                logger.debug("Docling Item: Label=%s, Text='%s'", item.label, log_text)
+            else:
+                logger.debug("Docling Item: Label=%s, No text attribute", item.label)
+
+            if item.label in (DocItemLabel.PAGE_HEADER, DocItemLabel.PAGE_FOOTER) and hasattr(item, "text"):
+                logger.info("헤더/푸터 제거됨 (%s): %s", item.label, item.text.strip())
+                item.text = ""
+
+        return doc.export_to_markdown().strip()
+
     def parse(self, content: bytes, filename: str = None) -> List[ParsedDocument]:
-        """
-        Docling을 사용하여 PDF를 Markdown으로 변환
-        
-        Args:
-            content: PDF 파일 바이너리
-            filename: 파일명
-        
-        Returns:
-            ParsedDocument 리스트
-        """
+        """Convert one queued PDF task in sequential page ranges and merge its Markdown."""
         if not self.converter:
             raise ImportError(
                 "docling 패키지가 설치되지 않았거나 초기화에 실패했습니다. "
                 "pip install docling로 설치하세요."
             )
 
+        logger.info("Docling을 사용하여 파싱을 시도합니다: 파일=%s", filename)
+        tmp_path = None
         try:
-            logger.info(f"Docling을 사용하여 파싱을 시도합니다: 파일={filename}")
-            
-            # 임시 파일 생성
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
                 tmp_file.write(content)
                 tmp_path = tmp_file.name
-            
-            try:
-                # PDF 변환 (초기화된 converter 재사용)
-                result = self.converter.convert(tmp_path)
-                
-                # 문서 객체 가져오기
-                doc = result.document
-                
-                # 헤더와 푸터 라벨 정의
-                from docling_core.types.doc import DocItemLabel
-                
-                # DoclingDocument를 순회하며 HEADER/FOOTER 라벨을 가진 아이템의 내용을 비움
-                for item, _ in doc.iterate_items():
-                    # 모든 아이템의 라벨과 텍스트 로깅 (디버깅용)
-                    # 텍스트가 있는 경우에만 로깅
-                    if hasattr(item, "text"):
-                        log_text = item.text.strip()[:50] + "..." if len(item.text.strip()) > 50 else item.text.strip()
-                        logger.debug(f"Docling Item: Label={item.label}, Text='{log_text}'")
-                    else:
-                        logger.debug(f"Docling Item: Label={item.label}, No text attribute")
 
-                    if item.label in (DocItemLabel.PAGE_HEADER, DocItemLabel.PAGE_FOOTER):
-                        # 텍스트를 비워서 export 시 포함되지 않게 함
-                        if hasattr(item, "text"):
-                            logger.info(f"헤더/푸터 제거됨 ({item.label}): {item.text.strip()}")
-                            item.text = ""
-                            
-                # 수정된 문서 객체로 Markdown 변환
-                markdown_text = doc.export_to_markdown()
-                
-                if not markdown_text or not markdown_text.strip():
-                    logger.warning(f"Docling이 빈 결과를 반환했습니다: 파일={filename}")
-                    raise ValueError(
-                        "PDF에서 텍스트를 추출할 수 없습니다. "
-                        "PDF가 텍스트 레이어를 포함하지 않거나 이미지로만 구성되어 있을 수 있습니다."
+            total_pages = self._page_count(tmp_path)
+            ranges = list(page_ranges(total_pages, self.page_batch_size))
+            markdown_parts = []
+
+            for batch_number, (start_page, end_page) in enumerate(ranges, start=1):
+                result = None
+                doc = None
+                try:
+                    logger.info(
+                        "Docling 페이지 배치 파싱: %d/%d, 페이지=%d-%d",
+                        batch_number,
+                        len(ranges),
+                        start_page,
+                        end_page,
                     )
-                
-                logger.info(f"Docling 파싱 성공: 파일={filename}, 텍스트 길이={len(markdown_text)}")
-                
-                # 단일 문서로 반환 (청킹은 별도로 처리)
-                return [ParsedDocument(
-                    text=markdown_text.strip(),
+                    result = self.converter.convert(
+                        tmp_path,
+                        page_range=(start_page, end_page),
+                    )
+                    doc = result.document
+                    part_markdown = self._export_without_headers_and_footers(doc)
+                    if part_markdown:
+                        markdown_parts.append(part_markdown)
+                    else:
+                        logger.warning(
+                            "Docling 페이지 배치가 빈 결과를 반환했습니다: 파일=%s, 페이지=%d-%d",
+                            filename,
+                            start_page,
+                            end_page,
+                        )
+                finally:
+                    # Retain only the compact Markdown string before converting the next range.
+                    doc = None
+                    result = None
+                    gc.collect()
+
+            markdown_text = "\n\n".join(markdown_parts).strip()
+            if not markdown_text:
+                raise ValueError(
+                    "PDF에서 텍스트를 추출할 수 없습니다. "
+                    "PDF가 텍스트 레이어를 포함하지 않거나 이미지로만 구성되어 있을 수 있습니다."
+                )
+
+            logger.info(
+                "Docling 파싱 성공: 파일=%s, 페이지=%d, 페이지 배치=%d, 텍스트 길이=%d",
+                filename,
+                total_pages,
+                self.page_batch_size,
+                len(markdown_text),
+            )
+            return [
+                ParsedDocument(
+                    text=markdown_text,
                     metadata={
                         "filename": filename or "unknown.pdf",
                         "format": "markdown",
-                        "parser": "docling"
-                    }
-                )]
-                    
-            finally:
-                # 임시 파일 삭제
-                if os.path.exists(tmp_path):
-                    os.unlink(tmp_path)
-
-        except Exception as e:
-            logger.error(
-                f"Docling 파싱 실패: {str(e)}, 파일={filename}. "
-                f"에러 타입: {type(e).__name__}"
+                        "parser": "docling",
+                        "page_count": total_pages,
+                        "page_batch_size": self.page_batch_size,
+                    },
+                )
+            ]
+        except Exception as error:
+            logger.exception(
+                "Docling 파싱 실패: %s, 파일=%s, 에러 타입=%s",
+                error,
+                filename,
+                type(error).__name__,
             )
-            import traceback
-            logger.error(f"상세 에러: {traceback.format_exc()}")
             raise
-    
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
     def supported_extensions(self) -> List[str]:
         return ["pdf"]
-
